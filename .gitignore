@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+venv/
+.venv/
+
+# Datasets
+raw_data/
+dataset/visdrone_person/images/
+dataset/visdrone_person/labels/
+*.zip
+
+# Training outputs
+runs/
+results/training/
+results/dataset_check/
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# Ultralytics
+*.cache
+
+# VS Code
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store

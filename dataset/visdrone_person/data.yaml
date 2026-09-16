@@ -1,0 +1,6 @@
+path: D:/7th sem/major project/chode/Human_detection_UAV/dataset/visdrone_person
+train: images/train
+val: images/val
+
+names:
+  0: person
