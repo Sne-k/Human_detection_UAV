@@ -33,3 +33,7 @@ results/dataset_check/
 # OS
 Thumbs.db
 .DS_Store
+# HIT-UAV dataset and generated analysis outputs
+dataset/hit_uav_person/
+results/error_analysis/
+results/hit_uav_dataset_check/
