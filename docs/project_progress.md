@@ -51,7 +51,7 @@
 |    41 | Two-model ensemble selection                              | Completed   |
 |    42 | Concept of operations decision (detect-and-report)        | Completed   |
 |    43 | False-positive composition analysis                       | Completed   |
-|    44 | MT-009 hard-negative mining                               | In progress |
+|    44 | MT-009 hard-negative mining                               | Completed   |
 |    45 | Payload interface control document                        | Completed   |
 |    46 | Payload hardware selection matrix                         | Completed   |
 |    47 | Thermal camera procurement                                | Pending     |

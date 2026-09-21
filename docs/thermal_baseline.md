@@ -216,7 +216,8 @@ in as evidence arrives.
 | --------- | ---------------------------------- | --------------------------- |
 | A         | MT-005 single model                | Frozen baseline             |
 | B         | MT-005 + MT-006 + MT-007, WBF      | Measured, see section 22    |
-| C         | MT-008 single model (mosaic = 0)   | Completed - worse, see below |
+| C         | MT-008 single model (mosaic = 0)   | Completed - rejected         |
+| E         | MT-009 single model (hard negatives) | Completed - rejected       |
 | D         | MT-005 + MT-006, WBF fusion        | **Best measured**            |
 
 | Candidate | Matched | Missed | Unmatched | Precision | Blind | Compute |
@@ -224,10 +225,15 @@ in as evidence arrives.
 | A MT-005  |   2,425 |    186 |       638 | 0.7917    |     8 | 1x      |
 | B 3-model |   2,476 |    135 |       722 | 0.7742    |     4 | 3x      |
 | C MT-008  |   2,424 |    187 |       717 | 0.7717    |    11 | 1x      |
+| E MT-009  |   2,428 |    183 |       637 | 0.7922    |    12 | 1x      |
 | **D MT-005+MT-006** | **2,456** | **155** | **617** | **0.7992** | **5** | **2x** |
 
 Candidate C is rejected: MT-008 matched one fewer person than the baseline and
 raised merged-box failures from 57 to 70, refuting the mosaic hypothesis.
+
+Candidate E is rejected: MT-009 reduced unmatched boxes by one out of 638,
+which is no improvement, and raised blind images from 8 to 12 - the error mode
+that matters most for a search payload.
 
 Candidate B improves recall but at the cost of precision (0.7742 against
 0.7917) and 84 extra unmatched boxes - a trade, not a free improvement.

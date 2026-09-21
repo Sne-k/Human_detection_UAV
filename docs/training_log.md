@@ -1723,3 +1723,107 @@ with recall approximately unchanged.
 
 Recording the expectation in advance keeps the result interpretable either
 way.
+
+---
+
+## 31. MT-009 Result - Hard-Negative Mining Rejected
+
+Training completed in 1.780 hours, best epoch 46.
+
+### Held-out test results
+
+| Metric    | MT-005 | MT-009 | Change |
+| --------- | ------ | ------ | ------ |
+| Precision | 0.897  | 0.899  | +0.002 |
+| Recall    | 0.891  | 0.882  | -0.009 |
+| mAP@50    | 0.933  | 0.930  | -0.003 |
+| mAP@50-95 | 0.510  | 0.506  | -0.004 |
+
+### Custom error analysis, confidence 0.25
+
+| Measurement              | MT-005 | MT-009 | Change |
+| ------------------------ | -----: | -----: | -----: |
+| Matched persons          |  2,425 |  2,428 |     +3 |
+| Missed persons           |    186 |    183 |     -3 |
+| **Unmatched boxes**      |  **638** | **637** | **-1** |
+| **Blind images**         |    **8** |  **12** | **+4** |
+| Custom precision         | 0.7917 | 0.7922 | +0.0005 |
+| Small-person recall      | 0.9294 | 0.9302 | +0.0008 |
+| Merged-box failures      |     57 |     55 |     -2 |
+
+### Verdict against the prediction
+
+Section 30 recorded a prediction before the run: *"a modest reduction in
+unmatched boxes with recall approximately unchanged."*
+
+Half of that held. Recall was approximately unchanged, +0.0011 on the custom
+measure. But the unmatched-box reduction was **one box out of 638**, which is
+not a modest improvement - it is no improvement. The prediction was too
+optimistic even at its deliberately low bar.
+
+Every difference in both tables sits inside run-to-run variation. The single
+metric that moved outside noise moved the wrong way: **blind images rose from
+8 to 12**, a 50% increase in the error mode that matters most for a search
+payload, where a person is present in the frame and nothing at all is
+reported.
+
+**MT-009 is rejected. MT-005 remains the frozen baseline.**
+
+### Why it failed
+
+Section 29 capped the available gain before the run: hard-negative mining
+addresses background firing, which is only 44% of unmatched boxes. The other
+56% are near-miss boxes on real people, which no amount of background training
+can fix.
+
+Two further factors compressed even that 44%:
+
+1. **Ratio.** 283 mined negatives against 2,029 training images is 1:7.
+   Lygouras et al. used 1:1. The intervention was roughly seven times weaker
+   than the method it copies.
+2. **Availability.** 1,444 of 1,727 candidate crops were discarded because a
+   real person fell inside the window. 95.9% of these false positives occur on
+   images that already contain people, so the negatives that would have been
+   most informative are exactly the ones that cannot be safely extracted.
+
+The method is sound and is well evidenced in the literature. It does not
+transfer to this failure profile. Lygouras's detector was firing on boats in
+otherwise-empty water - entirely the background category, and freely
+collectable as clean negatives. This detector fires mostly on people it has
+already found and localised badly.
+
+### What this closes
+
+Seven directions have now been tested against the MT-005 baseline and none has
+improved it:
+
+| Direction                   | Experiment | Outcome                          |
+| --------------------------- | ---------- | -------------------------------- |
+| Higher input resolution     | MT-006     | Recall down                      |
+| Crop-augmented training     | MT-007     | All test metrics down            |
+| Mosaic removal              | MT-008     | Merged boxes 57 -> 70            |
+| Hard-negative mining        | MT-009     | No change; blind images 8 -> 12  |
+| Lower confidence threshold  | Diagnostic | 15 false positives per person    |
+| Global box-scale correction | Sweep      | No sizing bias exists to correct |
+| Longer training             | Curves     | All runs flat over last 5 epochs |
+| Larger model                | Latency    | YOLO26s is 1.7-2.8 FPS on target |
+
+Single-model training-side improvement on this dataset is exhausted. The only
+intervention that has improved on the baseline is combining models that fail
+on different people, and it improves both precision and recall at once because
+it attacks the localisation mechanism that produces both failure types.
+
+### The remaining untested lever
+
+Box-loss weighting has never been changed. Every experiment from MT-001 to
+MT-009 used the Ultralytics defaults, `box: 7.5` and `dfl: 1.5`.
+
+That is the one remaining lever aimed at the measured dominant mechanism.
+Section 29 showed that 56% of unmatched boxes are localisation near-misses,
+and that each is counted twice - once as a missed person and once as a false
+positive - so an improvement in box regression pays in both columns
+simultaneously. That is precisely the effect observed when fusion corrects
+near-misses.
+
+It is worth one controlled run. It is also the last one worth making before
+the constraint moves from the detector to the hardware.
