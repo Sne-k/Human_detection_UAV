@@ -2430,3 +2430,84 @@ At the operational criterion the two configurations are close on people found,
 alarms, while being ahead at the strict criterion. It remains the better
 configuration, but this particular comparison is a trade rather than the clean
 sweep that sections 36 and 37 describe, and it should not be reported as one.
+
+---
+
+## 39. Every Frame-Rate Figure So Far Measured the Detector, Not the Payload
+
+`benchmark_edge_cpu.py` and `architecture_budget.py` both time a single
+forward pass through the exported graph. Every FPS number in this project
+comes from one of them, and the mission requirement in
+`coverage_requirements.py` is compared against those numbers.
+
+But the payload does not just detect. Each frame also goes through
+ego-motion estimation, tracking, movement classification, geolocation and now
+weighted box fusion. None of that has ever been timed, so the comparison has
+been detector-against-requirement while the requirement applies to the
+**payload**.
+
+Measured by running `payload.py` end to end on the synthetic test sequence
+with `--device cpu`:
+
+| Configuration | Frame median | Detect median | Everything else |
+|---------------|-------------:|--------------:|----------------:|
+| Full pipeline | 72.49 ms | 63.78 ms | **8.7 ms** |
+| `--no-ego-motion` | 63.96 ms | 61.89 ms | **2.1 ms** |
+
+So tracking, movement classification, geolocation and fusion together cost
+**2.1 ms**, and ego-motion compensation - Lucas-Kanade optical flow plus an
+affine RANSAC fit - costs a further **6.6 ms**.
+
+The detector here runs through PyTorch rather than ONNX, which is why it reads
+62-64 ms against the exported graph's 38.8 ms. The overhead is what this
+measurement is for, and it is independent of how the detector is executed.
+
+### What the payload actually costs
+
+Taking the ONNX detector figure and adding the measured overhead:
+
+| Configuration | Dev CPU | Pi 5 estimate | Pi 5 FPS |
+|---------------|--------:|---------------|----------|
+| Detector alone (as previously reported) | 38.8 ms | 117 - 194 ms | 5.2 - 8.6 |
+| **+ tracking, movement, geolocation, fusion** | 40.9 ms | 123 - 205 ms | 4.9 - 8.1 |
+| **+ ego-motion (full pipeline)** | **47.5 ms** | **143 - 238 ms** | **4.2 - 7.0** |
+
+**The payload is about 22% more expensive than the detector alone**, and every
+frame-rate claim in this project was optimistic by that margin.
+
+### Against the requirements
+
+| Configuration | 6.7 FPS @ 60 m | 4.0 FPS @ 100 m | 1.34 FPS report-only |
+|---------------|----------------|-----------------|----------------------|
+| Detector alone | marginal | clears | clears |
+| **Full pipeline** | **marginal** | **clears, barely** | clears |
+| **Report-only, no ego-motion** | marginal | clears | **clears comfortably** |
+
+No verdict flips outright, which is the fortunate part. But "clears" at 100 m
+becomes "clears by 0.2 FPS", which is not a margin anyone should plan a
+purchase around.
+
+### The two costs arrive together, and so do the two savings
+
+This is the useful structure in the result. Ego-motion compensation exists to
+serve movement classification, and movement classification is also what sets
+the 6.7 FPS requirement - coverage alone needs 0.64 FPS and confirmation 1.34.
+
+So the expensive component and the demanding requirement are the same
+decision. Section 28 already concluded that **detect-and-report is the primary
+mission** and movement classification is a loiter-phase capability. Dropping
+it in the search phase removes 6.6 ms per frame *and* lowers the requirement
+from 6.7 FPS to 1.34, which the payload then clears by a factor of four.
+
+That is a far more comfortable place to be than arguing about whether 7.0
+beats 6.7.
+
+### Caveat
+
+This was measured on a 120-frame synthetic sequence at 512 x 384 with a single
+moving target and 25 unique tracks. Tracking and fusion cost scales with the
+number of detections, so a dense scene will cost more than 2.1 ms. The
+ego-motion figure is the more transferable of the two, since optical flow over
+a fixed grid does not depend on how many people are present.
+
+Re-measure on real flight video when there is any.
