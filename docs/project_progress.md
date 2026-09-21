@@ -44,9 +44,13 @@
 |    34 | Shared-failure characterisation                           | Completed   |
 |    35 | Thermal model ensembling investigation                    | Completed   |
 |    36 | Failure-mechanism verification                            | Completed   |
-|    37 | Embedded companion-computer selection                     | Pending     |
-|    38 | Embedded model deployment/benchmarking                    | Pending     |
-|    39 | UAV payload/system integration                            | Pending     |
+|    37 | MT-005 frozen as thermal baseline                         | Completed   |
+|    38 | Three-model WBF ensemble inference pipeline               | Completed   |
+|    39 | MT-008 mosaic ablation (crowd separation)                 | In progress |
+|    40 | Candidate comparison A / B / C                            | Pending     |
+|    41 | Embedded companion-computer selection                     | Pending     |
+|    42 | Embedded model deployment/benchmarking                    | Pending     |
+|    43 | UAV payload/system integration                            | Pending     |
 
 ---
 
@@ -403,8 +407,14 @@ better-centred box than any single one.
 
 Against the baseline, the ensemble recovers 51 persons for 84 extra false
 positives (1.6 per person), where lowering the threshold recovers 43 for 662
-(15.4 per person) - roughly a tenth of the cost, and better on every reported
-measure.
+(15.4 per person) - roughly a tenth of the cost.
+
+This is a trade, not a free gain. The ensemble's precision under the custom
+metric is **lower** than the MT-005 baseline's, 0.7742 against 0.7917, because
+of those 84 extra unmatched boxes. It improves recall and the missed-person
+count at some cost in false detections. For a rescue payload that is the right
+direction, since a missed person is the costlier error, but it should be
+reported as a trade.
 
 The ensemble runs three models per frame, which the eager pipeline could not
 absorb. The CUDA-graph measurement below resolves that: three graphed models

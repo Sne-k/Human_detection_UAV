@@ -1191,10 +1191,21 @@ Cost per additional person recovered, against the MT-005 baseline:
 | Lower threshold |             43 |                   662 |            15.4 |
 | WBF ensemble    |             51 |                    84 |             1.6 |
 
-**The ensemble recovers more people than threshold lowering, at roughly a tenth
-of the false-positive cost**, and beats it on every reported measure: more
-matched, fewer missed, 578 fewer unmatched boxes, higher precision, and the
-same number of images where a person is present but nothing is reported.
+**Against threshold lowering, the ensemble recovers more people at roughly a
+tenth of the false-positive cost**, and beats it on every reported measure:
+more matched, fewer missed, 578 fewer unmatched boxes, higher precision
+(0.7742 against 0.6550), and the same number of images where a person is
+present but nothing is reported.
+
+Against the MT-005 baseline the trade is different and must not be overstated.
+The ensemble improves recall and the missed-person count, but its precision is
+**lower** than the baseline's - 0.7742 against 0.7917 - because it emits 84
+more unmatched boxes. The ensemble buys recall and pays for it in false
+positives; it is not strictly better than MT-005 on every axis.
+
+For a search-and-rescue payload that is the right direction to trade, since a
+missed person is the costlier error, but the report must state it as a trade
+rather than as a free improvement.
 
 ### Cost
 
