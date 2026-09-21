@@ -258,6 +258,71 @@ Batch 8 removes that bottleneck and recovers the expected compute scaling:
 18.7 ms/image at 1280 px versus about 4-6 ms/image at 640 px, roughly the 4x
 ratio the pixel count predicts.
 
+### Confirming it with CUDA graphs
+
+The launch-bound reading above is an inference from a timing ratio. It can be
+tested directly. Capturing the forward pass into a CUDA graph and replaying it
+submits the entire network with a single launch instead of hundreds, while
+running exactly the same kernels in the same order. Any speedup is therefore
+pure launch overhead.
+
+Verified bit-identical to eager execution before timing, on random tensors and
+on 12 real thermal test images producing 131 detections:
+
+| Check                         | Result        |
+| ----------------------------- | ------------- |
+| Max absolute output difference| 0.000e+00     |
+| Candidates above conf 0.25    | 131 vs 131    |
+
+| Experiment | Graph shape | Eager forward | CUDA graph | Speedup | FPS   |
+| ---------- | ----------- | ------------: | ---------: | ------: | ----: |
+| MT-005     | 512 x 640   |      39.07 ms |    2.43 ms |  16.08x | 412.3 |
+| MT-006     | 768 x 960   |      39.98 ms |    4.54 ms |   8.81x | 220.2 |
+| MT-004     | 1280 x 1280 |      37.25 ms |   11.37 ms |   3.28x |  87.9 |
+
+This settles the diagnosis. The GPU was doing 2.43 ms of work on MT-005 while
+the CPU spent 39 ms dispatching it.
+
+Two details confirm the reading further:
+
+- **Resolution scaling reappears.** The graphed times are 2.43 / 4.54 /
+  11.37 ms for 512x640, 768x960 and 1280x1280 - close to proportional to pixel
+  count, which is what GPU compute should do. The eager column, by contrast,
+  is flat at roughly 37-40 ms regardless of resolution, because it was
+  measuring the host, not the model.
+- **The speedups differ for the right reason.** MT-004 gains only 3.3x because
+  at 1280 px it does real work (11.37 ms), so launch overhead is a smaller
+  share of its frame. MT-005 gains 16x because it barely computes at all.
+
+CUDA graphs need a fixed input shape and no host-side control flow in the
+captured region, which suits a payload driving a fixed-resolution sensor. NMS
+and tracking stay outside the graph.
+
+### The ensemble is affordable
+
+Section 22 of the training log established a weighted-box-fusion ensemble of
+the three thermal models as the best-performing configuration, and left its
+cost unresolved: three models per frame against a budget the eager pipeline
+could not absorb.
+
+The graphed timings resolve it.
+
+| Configuration                          | Detector time | FPS   |
+| -------------------------------------- | ------------: | ----: |
+| MT-005 alone, eager (today)            |      39.07 ms |  25.6 |
+| MT-005 alone, CUDA graph               |       2.43 ms | 412.3 |
+| Three-model ensemble, eager            |     ~117.6 ms |   8.5 |
+| Three-model ensemble, CUDA graphs      |       9.40 ms | 106.4 |
+
+The three-model ensemble under CUDA graphs costs 9.4 ms per frame, which is
+**4.2x faster than a single model is today**. The detector stops being the
+pipeline bottleneck: ego-motion estimation at roughly 5 ms/frame becomes the
+larger cost.
+
+The ensemble is therefore affordable, and the earlier caveat is withdrawn.
+What remains unmeasured is behaviour on the embedded target, where both the
+host dispatch rate and the GPU are different and the balance may shift again.
+
 ### Consequences for deployment
 
 1. **Single-frame latency on this hardware says nothing about model cost.**
@@ -266,8 +331,10 @@ ratio the pixel count predicts.
 
 2. **The optimisation that matters is graph export, not a smaller model.**
    Reducing resolution or parameters cannot help a workload that is bounded by
-   kernel launch count. Exporting to ONNX/TensorRT fuses the graph and removes
-   the Python-side dispatch, which is where the real gain is.
+   kernel launch count. The CUDA-graph measurement above confirms this
+   directly: the same weights, unchanged, run 16x faster once the launches are
+   removed. Exporting to ONNX/TensorRT recovers the same overhead in a
+   deployable form.
 
 3. **Companion-computer selection must not be based on these figures.**
    They characterise a laptop CPU's dispatch rate, not the embedded target.
@@ -357,9 +424,10 @@ constraint to honour at integration time, not a blocker.
 - Exports were verified on CPU ONNX Runtime, because the installed runtime has
   no CUDA provider. Verification checks numerical equivalence, which is
   provider-independent; it does not measure exported latency.
-- The predicted speedup from removing launch overhead has **not** yet been
-  measured. That requires a GPU execution provider or TensorRT on the target,
-  and remains outstanding.
+- The speedup from removing launch overhead **has** now been measured, but via
+  CUDA graphs rather than the ONNX runtime: 16.08x on MT-005, bit-identical to
+  eager. How much of that a given exported runtime recovers is still
+  unmeasured.
 - INT8 quantisation has not been attempted. It would change the numbers above
   and requires its own verification pass.
 
@@ -367,9 +435,10 @@ constraint to honour at integration time, not a blocker.
 
 ## 6. Next Steps
 
-1. Measure exported-model latency with a GPU execution provider or TensorRT,
-   to confirm the launch-bound analysis and quantify the actual gain. The
-   export is verified numerically but its speed is still unmeasured.
+1. Measure exported-model latency with a GPU execution provider or TensorRT.
+   The launch-bound analysis is now confirmed by CUDA graphs (16x on MT-005,
+   bit-identical), so the remaining question is how much of that an exported
+   runtime recovers, not whether the overhead is real.
 2. Validate tracking and movement detection on real UAV video, including
    identity-stability measurement against ground truth.
 3. Re-run both benchmarks on candidate companion computers.

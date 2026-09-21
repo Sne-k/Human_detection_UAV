@@ -406,9 +406,10 @@ positives (1.6 per person), where lowering the threshold recovers 43 for 662
 (15.4 per person) - roughly a tenth of the cost, and better on every reported
 measure.
 
-The ensemble runs three models per frame, so whether it is deployable depends
-on exported-model latency, which is not yet measured. It is established as the
-best-performing thermal configuration, not yet as the deployable one.
+The ensemble runs three models per frame, which the eager pipeline could not
+absorb. The CUDA-graph measurement below resolves that: three graphed models
+cost 9.4 ms per frame, **4.2x faster than a single model runs today**. The
+ensemble is affordable.
 
 ### Latency Benchmark
 
@@ -420,6 +421,21 @@ the development GPU: the CPU takes as long to enqueue kernels as the entire
 frame takes, so 1280 px costs the same as 640 px. Batch 8 removes the
 bottleneck and recovers the expected compute scaling (18.7 / 9.9 / 4.4 ms per
 image at 1280 / 960 / 640 px).
+
+This was then confirmed directly with CUDA graphs, which submit the whole
+network in one launch while running identical kernels:
+
+| Experiment | Eager forward | CUDA graph | Speedup |
+| ---------- | ------------: | ---------: | ------: |
+| MT-005     |      39.07 ms |    2.43 ms |  16.08x |
+| MT-006     |      39.98 ms |    4.54 ms |   8.81x |
+| MT-004     |      37.25 ms |   11.37 ms |   3.28x |
+
+Replay was verified bit-identical to eager execution on random tensors and on
+real thermal images. Resolution scaling reappears in the graphed column
+(2.43 / 4.54 / 11.37 ms, close to proportional to pixel count) where the eager
+column was flat at 37-40 ms, confirming the eager figures were measuring host
+dispatch rather than the models.
 
 The consequence is that the useful deployment optimisation is graph export, not
 a smaller model, and that companion-computer selection must be based on
@@ -452,8 +468,8 @@ and embedded deployment.
    identity-stability measurement against ground truth. The current validation
    uses a synthetic sequence and contains only one moving target, so it tests
    false positives well and false negatives barely at all.
-3. Decide whether the WBF ensemble is affordable once exported-model latency is
-   known. If it is not, the fallback is MT-005 alone at 0.25.
+3. Adopt the WBF ensemble as the thermal configuration. Its cost is resolved:
+   9.4 ms per frame under CUDA graphs, against 39 ms for one eager model.
 4. Select the companion computer using post-export measurements on candidate
    hardware.
 5. Benchmark the exported model on the selected embedded hardware.
