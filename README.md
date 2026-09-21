@@ -128,6 +128,7 @@ Datasets, weights and training outputs are excluded from Git (see
 | --------------------------------- | -------------------------------------------- |
 | `realtime_detect.py`              | Detection + tracking + movement pipeline      |
 | `make_test_sequence.py`           | Synthesise a validation sequence with truth   |
+| `geolocate.py`                    | Pixel detections to ground coordinates        |
 
 ---
 
