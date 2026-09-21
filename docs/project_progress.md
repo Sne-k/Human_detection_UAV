@@ -43,9 +43,10 @@
 |    33 | MT-007 confidence-threshold diagnostic                    | Completed   |
 |    34 | Shared-failure characterisation                           | Completed   |
 |    35 | Thermal model ensembling investigation                    | Completed   |
-|    36 | Embedded companion-computer selection                     | Pending     |
-|    37 | Embedded model deployment/benchmarking                    | Pending     |
-|    38 | UAV payload/system integration                            | Pending     |
+|    36 | Failure-mechanism verification                            | Completed   |
+|    37 | Embedded companion-computer selection                     | Pending     |
+|    38 | Embedded model deployment/benchmarking                    | Pending     |
+|    39 | UAV payload/system integration                            | Pending     |
 
 ---
 
@@ -355,6 +356,35 @@ Size does not separate the failures from the successes at all. Two causes do:
 
 This explains the MT-006 and MT-007 results directly: both addressed target
 scale, which was never the limiting factor.
+
+### Failure-Mechanism Verification
+
+The crowding explanation was circumstantial - nearest-neighbour distance is
+only a proxy for visual crowding - so the mechanism was tested directly by
+examining what each near-miss prediction actually did.
+
+| Mechanism             | Count | Share of the 68 with a prediction |
+| --------------------- | ----: | --------------------------------: |
+| Merged, 2+ people     |    43 |                             63.2% |
+| Undersized box        |    20 |                             29.4% |
+| Ordinary displacement |     3 |                              4.4% |
+| Claimed by neighbour  |     2 |                              2.9% |
+
+The merged boxes average 2.03x the area of the person they should have covered,
+and 41 of 43 touch exactly two annotated people. Among the 2,397 successful
+detections only 4.46% involve a multi-person box, so the failures are about
+**14x more likely** to be merged boxes. The mechanism is confirmed, not merely
+correlated.
+
+The undersized group turned out to be a separate mechanism rather than
+displacement: those boxes are correctly centred but roughly half the annotated
+area (width ratio 0.651, height ratio 0.715), because the detector locks onto
+the bright heat signature while the annotation covers the whole body.
+
+A global box-enlargement fix was tested and **rejected**. Matched detections
+show no sizing bias at all (ratios 0.994 and 0.986), and a scale sweep gains
+only 9 persons at 1.05 before degrading sharply - losing 400 by 1.30. The
+undersized cases are per-instance failures, not a calibration bias.
 
 ### Thermal Model Ensembling
 

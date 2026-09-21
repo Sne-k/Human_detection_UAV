@@ -1076,6 +1076,11 @@ for detected persons, and 38% of localisation failures have an aspect ratio
 below 1.2 against 22% of detected persons. A box squarer than a standing person
 seen from above is what a box spanning two adjacent people looks like.
 
+This remained circumstantial until the mechanism itself was measured in
+section 24, which confirms it: 63% of the overlapping failures are a single
+prediction drawn around two annotated people, against 4.46% among successful
+detections.
+
 ### Recognition failures are a daylight problem
 
 | Group                 | Daylight share |
@@ -1224,3 +1229,111 @@ specific rather than speculative. Any MT-008 should target crowd separation or
 daylight thermal contrast, because those are the measured failure modes, and
 should not target target scale, which three separate studies have now ruled
 out.
+
+---
+
+## 24. Verifying the Crowding Mechanism
+
+Section 21 concluded that crowding drives the shared localisation failures, but
+the evidence there was circumstantial: nearest-neighbour distance is only a
+proxy for visual crowding, and a correlation with some third factor would look
+the same. `scripts/verify_crowding_hypothesis.py` tests the mechanism directly
+by asking what the near-miss prediction actually did.
+
+Four outcomes are distinguishable:
+
+| Mechanism  | Signature                                                      |
+| ---------- | -------------------------------------------------------------- |
+| merged     | One prediction covers 2+ annotated people and is oversized      |
+| stolen     | The best-overlapping prediction was matched to a neighbour      |
+| undersized | Covers this person alone, but well under the annotated area     |
+| offset     | Covers this person alone, right size, simply displaced          |
+
+Only the first two are crowding. The last two would point at box regression
+instead, which needs a completely different fix.
+
+### Result, 87 persons missed by MT-005 and MT-007 at confidence 0.10
+
+| Mechanism  | Count | Share of the 68 with an overlapping prediction |
+| ---------- | ----: | ---------------------------------------------: |
+| merged     |    43 |                                          63.2% |
+| stolen     |     2 |                                           2.9% |
+| undersized |    20 |                                          29.4% |
+| offset     |     3 |                                           4.4% |
+| no overlap |    19 |                             (no prediction at all) |
+
+**Crowding accounts for 45 of 68 (66.2%).**
+
+The merged boxes are unambiguous: median area 2.03x the person they should have
+covered, and 41 of the 43 touch exactly two annotated people (the other two
+touch three).
+
+The control settles the correlation question. Among the 2,397 successfully
+detected persons, only **4.46%** have a prediction covering two or more
+annotated people. The failures are therefore about **14x more likely** to
+involve a multi-person box than the successes are. This is a mechanism, not a
+coincidence.
+
+Visual inspection of the rendered crops confirms it directly: the merged cases
+show a single prediction box drawn around two adjacent people, with each person
+separately annotated inside it.
+
+### Ordinary box-regression error is almost absent
+
+Only 3 of 68 failures (4.4%) are simple displacement. The original section 21
+wording called this group "shifted", which was wrong. Measuring width and
+height separately shows what it actually is:
+
+| Group                  | Width ratio | Height ratio | Area ratio |
+| ---------------------- | ----------: | -----------: | ---------: |
+| Undersized failures    |       0.651 |        0.715 |       0.48 |
+| All matched detections |       0.994 |        0.986 |       ~1.0 |
+
+These boxes are correctly centred but roughly half the annotated area. In
+thermal imagery the detector locks onto the bright heat signature while the
+HIT-UAV annotation covers the whole body, so the box is too small to reach
+IoU 0.50 no matter how well it is placed. A box containing 48% of the
+annotation's area cannot exceed IoU 0.48, which matches the observed median
+best-overlap IoU of 0.44 almost exactly.
+
+### Global box enlargement does not work
+
+The undersizing above suggests an obvious cheap fix: scale every predicted box
+up. The matched-detection ratios already argue against it - at 0.994 and 0.986
+the model shows **no systematic sizing bias** on the 2,468 persons it gets
+right, so enlarging boxes would damage those to rescue 20.
+
+Measured on MT-005 at confidence 0.25:
+
+| Box scale | Matched | Missed | Unmatched | Recall |
+| --------- | ------: | -----: | --------: | ------ |
+| 1.00      |   2,425 |    186 |       638 | 0.9288 |
+| 1.05      |   2,434 |    177 |       629 | 0.9322 |
+| 1.10      |   2,424 |    187 |       639 | 0.9284 |
+| 1.15      |   2,394 |    217 |       669 | 0.9169 |
+| 1.20      |   2,323 |    288 |       740 | 0.8897 |
+| 1.30      |   2,025 |    586 |     1,038 | 0.7756 |
+
+The gain at 1.05 is 9 persons and it is gone by 1.10, with sharp degradation
+beyond. Two reasons not to adopt it: the effect is marginal, and this sweep was
+run on the held-out test set, so selecting a scale factor from it would be
+tuning on test data. Any such factor would have to be chosen on the validation
+split and only then confirmed here.
+
+**Global box-scale correction is rejected.** The undersized cases are genuine
+per-instance failures, not a calibration bias.
+
+### What this means for MT-008
+
+The remaining thermal failures now have measured mechanisms rather than
+suspected ones:
+
+| Mechanism              | Share of the 87 | Implied direction                     |
+| ---------------------- | --------------: | ------------------------------------- |
+| Merged / crowding      |      45 (51.7%) | Crowd separation                      |
+| Undersized boxes       |      20 (23.0%) | Box-scale learning on partial signatures |
+| No detection at all    |      19 (21.8%) | Daylight thermal contrast             |
+| Ordinary displacement  |        3 (3.4%) | Nothing worth targeting               |
+
+Higher resolution and crop augmentation address none of these, which is
+precisely what MT-006 and MT-007 measured.
