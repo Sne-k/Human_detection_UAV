@@ -213,6 +213,78 @@ on an airframe where weight and power are already constrained.
 
 ---
 
+## 3c. Memory Footprint
+
+Measured directly, not estimated, with ONNX Runtime on CPU:
+
+| Stack                                      | Resident |
+| ------------------------------------------ | -------: |
+| python + numpy + opencv + onnxruntime      |    58 MB |
+| **+ MT-005 session + frame buffers**       | **150 MB** |
+| All three models resident (ensemble)       |   383 MB |
+
+Against a 4 GB board running a headless OS (~200-300 MB), that leaves over
+3.5 GB free. **Memory is not a constraint for this workload** - there is
+roughly 25x headroom on a single model. Even a 2 GB board would run it; 4 GB
+simply buys margin for the OS, video buffers and logging.
+
+The binding constraints are compute, thermal headroom and sensor resolution -
+not RAM.
+
+---
+
+## 3d. Thermal Sensor Resolution - the Binding Purchase Decision
+
+Every accuracy figure in this project assumes a **640 x 512** thermal sensor,
+because that is what HIT-UAV was captured at. Budget LWIR modules are much
+coarser, and the failure analysis already established that the remaining
+misses cluster around targets of 12 x 19 px. A coarser sensor pushes the whole
+population below that.
+
+`scripts/sensor_resolution_study.py` measures the effect by downscaling each
+test image to a candidate sensor resolution and resampling back to the model
+input, which reproduces the information the camera would actually have
+captured. Ground truth is unchanged, so recall is directly comparable.
+
+MT-005, 579 test images, 2,611 persons, confidence 0.25:
+
+| Sensor      | Person size | Matched | Recall | vs native | Extra missed | Blind images |
+| ----------- | ----------- | ------: | ------ | --------- | -----------: | -----------: |
+| 640 x 512   | 12.0 x 19.0 |   2,425 | 0.9288 | 100.0%    |           +0 |            8 |
+| 384 x 288   |  7.2 x 11.4 |   2,325 | 0.8905 | 95.9%     |         +100 |           17 |
+| 320 x 256   |  6.0 x 9.5  |   2,291 | 0.8774 | 94.5%     |         +134 |           18 |
+| 256 x 192   |  4.8 x 7.6  |   2,195 | 0.8407 | 90.5%     |         +230 |           28 |
+| 160 x 120   |  3.0 x 4.8  |   1,633 | 0.6254 | 67.3%     |         +792 |           72 |
+
+### Reading this
+
+**A 160 x 120 sensor - the FLIR Lepton class, and the usual budget choice -
+loses one person in three.** Recall falls from 0.929 to 0.625, and images where
+a person is present but nothing at all is reported rise from 8 to 72, a 9x
+increase. That is not a degraded search; it is a different capability.
+
+A 256 x 192 USB module costs 230 people, 8.8 points of absolute recall. 
+384 x 288 costs 100 people, 3.8 points, which is defensible.
+
+**The thermal camera, not the companion computer, is the decision that
+determines whether this payload works.** It is also the expensive component,
+so the temptation to economise lands exactly where it does the most damage.
+
+### One caveat, and an option
+
+These numbers use a detector *trained* at 640 x 512 and then shown coarser
+imagery, so part of the loss is domain mismatch rather than pure information
+loss. Retraining at the target sensor resolution would recover some of it -
+the model would at least learn what a 5 x 8 px person looks like.
+
+It cannot recover all of it. Information the sensor never captured is gone,
+and at 160 x 120 a person is 3 x 5 px, which is close to the limit of what any
+detector can localise to IoU 0.50. If a coarse sensor is chosen for cost
+reasons, retraining at that resolution should be treated as mandatory rather
+than optional, and the recall target revised accordingly.
+
+---
+
 ## 4. Options If More Performance Is Needed
 
 | Option                       | Effect                                    | Cost |

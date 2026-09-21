@@ -98,6 +98,8 @@ Datasets, weights and training outputs are excluded from Git (see
 | `benchmark_models.py`             | Uniform accuracy benchmark across all models  |
 | `benchmark_latency.py`            | Deployment latency, with launch-bound check   |
 | `benchmark_edge_cpu.py`           | CPU-only latency, Raspberry Pi proxy          |
+| `coverage_requirements.py`        | Derive required FPS from the mission          |
+| `sensor_resolution_study.py`      | Detection vs thermal sensor resolution        |
 | `export_models.py`                | ONNX export with verification                 |
 | `train_mt008.py`                  | MT-008 mosaic ablation                        |
 | `evaluate_experiment.py`          | Full baseline comparison for one experiment   |
