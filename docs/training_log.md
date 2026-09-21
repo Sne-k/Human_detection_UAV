@@ -1,8 +1,12 @@
-@'
-
 # Training Log
 
-This document records the human-detection model training experiments for the eVTOL UAV human-detection subsystem.
+This document records the human-detection model training experiments for the
+eVTOL UAV human-detection subsystem.
+
+Experiments are identified as `MT-xxx` and are listed in the order they were
+performed.
+
+---
 
 ## 1. Development Environment
 
@@ -17,11 +21,26 @@ This document records the human-detection model training experiments for the eVT
 | VRAM         | 6140 MiB                           |
 | Model family | YOLO26n                            |
 
-The development environment uses the NVIDIA GPU for accelerated training and inference.
+The development environment uses the NVIDIA GPU for accelerated training and
+inference.
 
 ---
 
-# 2. RGB Detection Experiments - VisDrone
+## 2. Experiment Index
+
+| ID     | Modality | Dataset                       | Input size | Epochs | Status    |
+| ------ | -------- | ----------------------------- | ---------- | ------ | --------- |
+| MT-001 | RGB      | VisDrone Person               | 640        | 3      | Completed |
+| MT-002 | RGB      | VisDrone Person               | 640        | 50     | Completed |
+| MT-003 | RGB      | VisDrone Person               | 960        | 50     | Completed |
+| MT-004 | RGB      | VisDrone Person               | 1280       | 50     | Completed |
+| MT-005 | Thermal  | HIT-UAV Person                | 640        | 50     | Completed |
+| MT-006 | Thermal  | HIT-UAV Person                | 960        | 50     | Completed |
+| MT-007 | Thermal  | HIT-UAV Person + 256 px crops | 640        | 50     | Completed |
+
+---
+
+# 3. RGB Detection Experiments - VisDrone
 
 ## Dataset
 
@@ -29,421 +48,881 @@ The development environment uses the NVIDIA GPU for accelerated training and inf
 
 **Task:** Single-class person detection
 
-The original VisDrone pedestrian and people categories were combined into one class:
+The original VisDrone `pedestrian` and `people` categories were combined into
+one class:
 
 ```text
 0: person
-Dataset statistics
-Split	Images	Images with persons	Person annotations
-Train	6471	5684	106396
-Validation	548	531	13969
+```
 
-The converted dataset was visually inspected using bounding-box visualization before training.
+### Dataset statistics
 
-MT-001 - RGB Pilot Training
+| Split      | Images | Images with persons | Person annotations |
+| ---------- | -----: | ------------------: | -----------------: |
+| Train      |   6471 |                5684 |             106396 |
+| Validation |    548 |                 531 |              13969 |
 
-A short 3-epoch pilot run was performed to verify the complete training pipeline.
+The converted dataset was visually inspected using bounding-box visualization
+before training.
 
-Configuration
-Parameter	Value
-Model	YOLO26n
-Dataset	VisDrone Person
-Input size	640 x 640
-Epochs	3
-Batch size	8
-GPU	NVIDIA RTX 4050 Laptop GPU
-AMP	Enabled
-Results
-Metric	Result
-Precision	0.498
-Recall	0.358
-mAP@50	0.366
-mAP@50-95	0.132
+---
 
-Status: Completed - pilot only.
+## MT-001 - RGB Pilot Training
 
-The run confirmed that the dataset, model, GPU and training pipeline were functioning correctly. It was not treated as a final benchmark because of the very short training duration.
+A short 3-epoch pilot run was performed to verify the complete training
+pipeline.
 
-MT-002 - RGB Baseline Training
+### Configuration
+
+| Parameter  | Value                      |
+| ---------- | -------------------------- |
+| Model      | YOLO26n                    |
+| Dataset    | VisDrone Person            |
+| Input size | 640 x 640                  |
+| Epochs     | 3                          |
+| Batch size | 8                          |
+| GPU        | NVIDIA RTX 4050 Laptop GPU |
+| AMP        | Enabled                    |
+
+### Results
+
+| Metric    | Result |
+| --------- | ------ |
+| Precision | 0.498  |
+| Recall    | 0.358  |
+| mAP@50    | 0.366  |
+| mAP@50-95 | 0.132  |
+
+**Status:** Completed - pilot only.
+
+The run confirmed that the dataset, model, GPU and training pipeline were
+functioning correctly. It was not treated as a final benchmark because of the
+very short training duration.
+
+---
+
+## MT-002 - RGB Baseline Training
 
 A 50-epoch baseline was trained at 640 x 640 input resolution.
 
-Configuration
-Parameter	Value
-Model	YOLO26n
-Dataset	VisDrone Person
-Input size	640 x 640
-Epochs	50
-Batch size	8
-GPU	NVIDIA RTX 4050 Laptop GPU
-AMP	Enabled
-Results
+### Configuration
+
+| Parameter  | Value                      |
+| ---------- | -------------------------- |
+| Model      | YOLO26n                    |
+| Dataset    | VisDrone Person            |
+| Input size | 640 x 640                  |
+| Epochs     | 50                         |
+| Batch size | 8                          |
+| GPU        | NVIDIA RTX 4050 Laptop GPU |
+| AMP        | Enabled                    |
+
+### Results
 
 Approximate final validation performance:
 
-Metric	Result
-Precision	~0.63
-Recall	~0.44
-mAP@50	~0.50
-mAP@50-95	~0.198
+| Metric    | Result |
+| --------- | ------ |
+| Precision | ~0.63  |
+| Recall    | ~0.44  |
+| mAP@50    | ~0.50  |
+| mAP@50-95 | ~0.198 |
 
-Status: Completed.
+**Status:** Completed.
 
-Error analysis
+### Error analysis
 
-The confusion matrix indicated a significant number of missed person detections.
+The confusion matrix indicated a significant number of missed person
+detections.
 
-The principal limitation identified was low recall, particularly for small aerial persons.
+The principal limitation identified was low recall, particularly for small
+aerial persons. This motivated controlled experiments using increased input
+resolution.
 
-This motivated controlled experiments using increased input resolution.
+---
 
-3. MT-003 - 960-Pixel RGB Human Detection
+## MT-003 - 960-Pixel RGB Human Detection
 
-YOLO26n was trained on the VisDrone person-only dataset for 50 epochs at 960 x 960 input resolution with a batch size of 4.
+YOLO26n was trained on the VisDrone person-only dataset for 50 epochs at
+960 x 960 input resolution with a batch size of 4.
 
-Configuration
-Parameter	Value
-Model	YOLO26n
-Dataset	VisDrone Person
-Input size	960 x 960
-Epochs	50
-Batch size	4
-GPU	NVIDIA RTX 4050 Laptop GPU
-AMP	Enabled
-Validation Results
-Metric	Result
-Precision	0.716
-Recall	0.548
-mAP@50	0.618
-mAP@50-95	0.274
+### Configuration
 
-Validation set: 548 images
-Person instances: 13,969
-Training time: 13.247 hours
-Inference speed: 5.7 ms/image during validation
+| Parameter  | Value                      |
+| ---------- | -------------------------- |
+| Model      | YOLO26n                    |
+| Dataset    | VisDrone Person            |
+| Input size | 960 x 960                  |
+| Epochs     | 50                         |
+| Batch size | 4                          |
+| GPU        | NVIDIA RTX 4050 Laptop GPU |
+| AMP        | Enabled                    |
 
-Status: Completed.
+### Validation results
 
-Observation
+| Metric    | Result |
+| --------- | ------ |
+| Precision | 0.716  |
+| Recall    | 0.548  |
+| mAP@50    | 0.618  |
+| mAP@50-95 | 0.274  |
 
-Increasing the training resolution from 640 x 640 to 960 x 960 improved validation precision, recall, mAP@50 and mAP@50-95.
+- Validation set: 548 images
+- Person instances: 13,969
+- Training time: 13.247 hours
+- Inference speed: 5.7 ms/image during validation
 
-However, recall remained the main limitation, particularly for small aerial persons.
+**Status:** Completed.
 
-4. MT-004 - 1280-Pixel RGB Human Detection
+### Observation
 
-A controlled higher-resolution experiment was performed using the same VisDrone split and YOLO26n model.
+Increasing the training resolution from 640 x 640 to 960 x 960 improved
+validation precision, recall, mAP@50 and mAP@50-95.
 
-Configuration
-Parameter	Value
-Model	YOLO26n
-Dataset	VisDrone Person
-Input size	1280 x 1280
-Epochs	50
-Batch size	2
-GPU	NVIDIA RTX 4050 Laptop GPU
-AMP	Enabled
-Validation Results
-Metric	Result
-Precision	0.738
-Recall	0.563
-mAP@50	0.653
-mAP@50-95	0.297
+However, recall remained the main limitation, particularly for small aerial
+persons.
 
-Validation set: 548 images
-Person instances: 13,969
+---
 
-Status: Completed.
+## MT-004 - 1280-Pixel RGB Human Detection
 
-Comparison with MT-003
-Metric	MT-003 (960)	MT-004 (1280)	Change
-Precision	0.716	0.738	+0.022
-Recall	0.548	0.563	+0.015
-mAP@50	0.618	0.653	+0.035
-mAP@50-95	0.274	0.297	+0.023
-Observation
+A controlled higher-resolution experiment was performed using the same VisDrone
+split and YOLO26n model.
 
-Increasing input resolution from 960 x 960 to 1280 x 1280 improved all four reported validation metrics.
+### Configuration
 
-The recall improvement was relatively modest, indicating that increased resolution alone does not completely solve the small-object detection problem.
+| Parameter  | Value                      |
+| ---------- | -------------------------- |
+| Model      | YOLO26n                    |
+| Dataset    | VisDrone Person            |
+| Input size | 1280 x 1280                |
+| Epochs     | 50                         |
+| Batch size | 2                          |
+| GPU        | NVIDIA RTX 4050 Laptop GPU |
+| AMP        | Enabled                    |
 
-5. RGB Confidence Threshold Study
+### Validation results
 
-The MT-004 model was evaluated on the same VisDrone validation set using different confidence thresholds.
+| Metric    | Result |
+| --------- | ------ |
+| Precision | 0.738  |
+| Recall    | 0.563  |
+| mAP@50    | 0.653  |
+| mAP@50-95 | 0.297  |
 
-Confidence	Precision	Recall	mAP@50	mAP@50-95
-0.15	0.744	0.569	0.596	0.278
-0.25	0.714	0.585	0.540	0.258
-0.35	0.838	0.505	0.477	0.234
-0.50	0.935	0.342	0.334	0.176
-Observation
+- Validation set: 548 images
+- Person instances: 13,969
 
-Increasing the confidence threshold reduced the number of accepted detections and generally increased precision while reducing recall.
+**Status:** Completed.
 
-The confidence threshold is therefore an operational/deployment parameter that must be selected according to the required balance between missed persons and false detections.
+### Comparison with MT-003
 
-The reported mAP values in this threshold study should not be interpreted as conventional confidence-threshold-independent AP comparisons.
+| Metric    | MT-003 (960) | MT-004 (1280) | Change |
+| --------- | ------------ | ------------- | ------ |
+| Precision | 0.716        | 0.738         | +0.022 |
+| Recall    | 0.548        | 0.563         | +0.015 |
+| mAP@50    | 0.618        | 0.653         | +0.035 |
+| mAP@50-95 | 0.274        | 0.297         | +0.023 |
 
-6. RGB Small-Object Error Analysis
+### Observation
 
-Post-training analysis was performed on the VisDrone validation predictions using an IoU threshold of 0.50.
+Increasing input resolution from 960 x 960 to 1280 x 1280 improved all four
+reported validation metrics.
 
-An area-based analysis was previously performed using:
+The recall improvement was relatively modest, indicating that increased
+resolution alone does not completely solve the small-object detection problem.
 
-Small: area < 32 x 32 pixels
-Medium: 32 x 32 <= area < 96 x 96 pixels
-Large: area >= 96 x 96 pixels
-MT-003 analysis
-Size	Ground Truth	Matched	Matched Ratio
-Small	12,377	6,723	0.543
-Medium	1,564	1,249	0.799
-Large	28	26	0.929
+MT-004 is the selected RGB reference model.
 
-Total ground-truth persons: 13,969
-Matched detections: 7,998
-Overall matched ratio: 0.573
+---
 
-The analysis showed substantially lower detection performance for smaller person bounding boxes.
+## 4. RGB Confidence Threshold Study
 
-7. MT-004 Missed-Person Analysis
+The MT-004 model was evaluated on the same VisDrone validation set using
+different confidence thresholds.
 
-The final MT-004 validation predictions were examined for images without prediction label files.
+| Confidence | Precision | Recall | mAP@50 | mAP@50-95 |
+| ---------- | --------- | ------ | ------ | --------- |
+| 0.15       | 0.744     | 0.569  | 0.596  | 0.278     |
+| 0.25       | 0.714     | 0.585  | 0.540  | 0.258     |
+| 0.35       | 0.838     | 0.505  | 0.477  | 0.234     |
+| 0.50       | 0.935     | 0.342  | 0.334  | 0.176     |
+
+### Observation
+
+Increasing the confidence threshold reduced the number of accepted detections
+and generally increased precision while reducing recall.
+
+The confidence threshold is therefore an operational/deployment parameter that
+must be selected according to the required balance between missed persons and
+false detections.
+
+The mAP values in this threshold study must not be interpreted as conventional
+threshold-independent AP comparisons, because a raised confidence threshold
+truncates the precision-recall curve.
+
+---
+
+## 5. RGB Small-Object Error Analysis
+
+Post-training analysis was performed on the VisDrone validation predictions
+using an IoU threshold of 0.50.
+
+An area-based analysis was performed using:
+
+- Small: area < 32 x 32 pixels
+- Medium: 32 x 32 <= area < 96 x 96 pixels
+- Large: area >= 96 x 96 pixels
+
+### MT-003 analysis
+
+| Size   | Ground Truth | Matched | Matched Ratio |
+| ------ | -----------: | ------: | ------------: |
+| Small  |       12,377 |   6,723 |         0.543 |
+| Medium |        1,564 |   1,249 |         0.799 |
+| Large  |           28 |      26 |         0.929 |
+
+- Total ground-truth persons: 13,969
+- Matched detections: 7,998
+- Overall matched ratio: 0.573
+
+The analysis showed substantially lower detection performance for smaller
+person bounding boxes.
+
+---
+
+## 6. MT-004 Missed-Person Analysis
+
+The final MT-004 validation predictions were examined for images without
+prediction label files.
 
 There were 21 validation images without prediction label files. Of these:
 
-14 contained no ground-truth persons.
-7 contained a total of 14 ground-truth persons.
-Missed-person bounding-box characteristics
-Measurement	Value
-Average width	10.0 px
-Average height	22.9 px
-Minimum width	5 px
-Minimum height	7 px
-Maximum width	26 px
-Maximum height	54 px
+- 14 contained no ground-truth persons.
+- 7 contained a total of 14 ground-truth persons.
+
+### Missed-person bounding-box characteristics
+
+| Measurement    | Value   |
+| -------------- | ------- |
+| Average width  | 10.0 px |
+| Average height | 22.9 px |
+| Minimum width  | 5 px    |
+| Minimum height | 7 px    |
+| Maximum width  | 26 px   |
+| Maximum height | 54 px   |
 
 11 of the 14 missed persons had bounding-box widths of 10 pixels or less.
 
-The missed detections were predominantly associated with very small persons in aerial imagery.
+The missed detections were predominantly associated with very small persons in
+aerial imagery.
 
-8. RGB Tiled-Inference Experiment
+---
 
-A custom tiled-inference pipeline was tested with MT-004 to investigate whether processing smaller image regions could improve small-person detection.
+## 7. RGB Tiled-Inference Experiment
 
-The NMS implementation was corrected before the final comparison because OpenCV NMS requires boxes in [x, y, width, height] format.
+A custom tiled-inference pipeline was tested with MT-004 to investigate whether
+processing smaller image regions could improve small-person detection.
 
-Standard vs Tiled
+The NMS implementation was corrected before the final comparison because
+OpenCV NMS requires boxes in `[x, y, width, height]` format.
 
-Both methods were evaluated on the 548-image VisDrone validation set using IoU >= 0.50.
+### Standard vs tiled
 
-Metric	Standard	Tiled
-Ground-truth persons	13,969	13,969
-Predicted boxes	11,509	11,024
-Matched persons	8,199	8,112
-Overall matched ratio	0.5869	0.5807
-Zero-detection images	21	21
-Size-wise results
-Size	Standard Recall	Tiled Recall
-Small	0.5809	0.5769
-Medium	0.7724	0.6989
-Large	0.8000	0.6000
+Both methods were evaluated on the 548-image VisDrone validation set using
+IoU >= 0.50.
 
-The tested tiled configuration produced 87 fewer matched persons and 485 fewer predicted boxes.
+| Metric                | Standard | Tiled  |
+| --------------------- | -------- | ------ |
+| Ground-truth persons  | 13,969   | 13,969 |
+| Predicted boxes       | 11,509   | 11,024 |
+| Matched persons       | 8,199    | 8,112  |
+| Overall matched ratio | 0.5869   | 0.5807 |
+| Zero-detection images | 21       | 21     |
 
-One of the 14 previously identified missed persons was recovered during tiled inference, but the overall validation comparison did not show an improvement.
+### Size-wise results
 
-Conclusion: The tested tiled configuration was not selected as the next optimization direction.
+| Size   | Standard Recall | Tiled Recall |
+| ------ | --------------- | ------------ |
+| Small  | 0.5809          | 0.5769       |
+| Medium | 0.7724          | 0.6989       |
+| Large  | 0.8000          | 0.6000       |
 
-9. HIT-UAV Thermal Dataset Integration
+The tested tiled configuration produced 87 fewer matched persons and 485 fewer
+predicted boxes.
 
-A separate thermal detection baseline was introduced using the HIT-UAV Infrared Thermal Dataset.
+One of the 14 previously identified missed persons was recovered during tiled
+inference, but the overall validation comparison did not show an improvement.
 
-The dataset contains UAV thermal imagery covering day and night conditions and multiple object categories.
+**Conclusion:** The tested tiled configuration was not selected as the next
+optimization direction. Tiling was later re-examined as a *training-time*
+augmentation instead of an inference-time strategy (MT-007).
 
-For this project, only the Person category was retained.
+---
 
-Original HIT-UAV category mapping
-ID	Category
-0	Person
-1	Car
-2	Bicycle
-3	OtherVehicle
-4	DontCare
+# 8. Thermal Detection Experiments - HIT-UAV
+
+## 8.1 HIT-UAV Thermal Dataset Integration
+
+A separate thermal detection baseline was introduced using the HIT-UAV Infrared
+Thermal Dataset.
+
+The dataset contains UAV thermal imagery covering day and night conditions and
+multiple object categories. For this project, only the Person category was
+retained.
+
+### Original HIT-UAV category mapping
+
+| ID  | Category     |
+| --- | ------------ |
+| 0   | Person       |
+| 1   | Car          |
+| 2   | Bicycle      |
+| 3   | OtherVehicle |
+| 4   | DontCare     |
 
 The Person category is therefore mapped to:
 
+```text
 0: person
-Converted dataset statistics
-Split	Images	Images with persons	Images without persons	Person annotations
-Train	2,029	1,165	864	8,533
-Validation	290	171	119	1,168
-Test	579	355	224	2,611
-Total	2,898	1,691	1,207	12,312
+```
+
+### Converted dataset statistics
+
+| Split      | Images | Images with persons | Images without persons | Person annotations |
+| ---------- | -----: | ------------------: | ---------------------: | -----------------: |
+| Train      |  2,029 |               1,165 |                    864 |              8,533 |
+| Validation |    290 |                 171 |                    119 |              1,168 |
+| Test       |    579 |                 355 |                    224 |              2,611 |
+| Total      |  2,898 |               1,691 |                  1,207 |             12,312 |
 
 The COCO-style bounding boxes were converted to YOLO format.
 
-The converted annotations were visually inspected using thermal-image bounding-box visualization. The sampled annotations showed correct placement over visible human thermal signatures.
+The converted annotations were visually inspected using thermal-image
+bounding-box visualization. The sampled annotations showed correct placement
+over visible human thermal signatures.
 
-10. MT-005 - Thermal Baseline
+The test split is held out and is used only for final evaluation.
+
+---
+
+## 9. MT-005 - Thermal Baseline
 
 YOLO26n was trained on the converted HIT-UAV Person dataset.
 
-Configuration
-Parameter	Value
-Model	YOLO26n
-Dataset	HIT-UAV Person
-Input size	640 x 640
-Epochs	50
-Batch size	8
-GPU	NVIDIA RTX 4050 Laptop GPU
-AMP	Enabled
-Validation Results
-Metric	Result
-Precision	0.890
-Recall	0.875
-mAP@50	0.919
-mAP@50-95	0.500
+### Configuration
 
-Validation set: 290 images
-Person instances: 1,168
-Training time: 1.599 hours
+| Parameter  | Value                      |
+| ---------- | -------------------------- |
+| Model      | YOLO26n                    |
+| Dataset    | HIT-UAV Person             |
+| Input size | 640 x 640                  |
+| Epochs     | 50                         |
+| Batch size | 8                          |
+| GPU        | NVIDIA RTX 4050 Laptop GPU |
+| AMP        | Enabled                    |
 
-Status: Completed.
+### Validation results
 
-11. MT-005 Held-Out Test Evaluation
+| Metric    | Result |
+| --------- | ------ |
+| Precision | 0.890  |
+| Recall    | 0.875  |
+| mAP@50    | 0.919  |
+| mAP@50-95 | 0.500  |
+
+- Validation set: 290 images
+- Person instances: 1,168
+- Training time: 1.599 hours
+- Best epoch: 47
+
+**Status:** Completed.
+
+---
+
+## 10. MT-005 Held-Out Test Evaluation
 
 The completed MT-005 model was evaluated on the separate HIT-UAV test split.
 
-Test Results
-Metric	Result
-Precision	0.898
-Recall	0.892
-mAP@50	0.933
-mAP@50-95	0.510
+| Metric    | Result |
+| --------- | ------ |
+| Precision | 0.898  |
+| Recall    | 0.892  |
+| mAP@50    | 0.933  |
+| mAP@50-95 | 0.510  |
 
-Test set: 579 images
-Person instances: 2,611
+- Test set: 579 images
+- Person instances: 2,611
+- Inference speed: approximately 4.2 ms/image during evaluation
 
-Inference speed: approximately 4.2 ms/image during evaluation
+**Status:** Completed.
 
-Status: Completed.
+This held-out test result is the primary test-set benchmark for the MT-005
+thermal baseline.
 
-This held-out test result is the primary test-set benchmark for the MT-005 thermal baseline.
+The thermal and RGB models must not be interpreted as showing that one modality
+is inherently superior, because they were trained and evaluated on different
+datasets with different imagery and annotation policies.
 
-The thermal and RGB models should not be directly interpreted as one modality being inherently superior because they were trained and evaluated on different datasets.
+---
 
-12. MT-005 Thermal Test Error Analysis
+## 11. MT-005 Thermal Test Error Analysis
 
-The MT-005 model was evaluated on the HIT-UAV test images at confidence threshold 0.25 for detailed error analysis.
+The MT-005 model was evaluated on the HIT-UAV test images at confidence
+threshold 0.25 for detailed error analysis.
 
-A one-to-one greedy matching procedure with IoU >= 0.50 was used for this custom analysis.
+A one-to-one greedy matching procedure with IoU >= 0.50 was used for this
+custom analysis.
 
-Confidence 0.25
-Measurement	Result
-Test images	579
-Images with GT persons	355
-Images with predictions	369
-Zero-prediction images	210
-Ground-truth persons	2,611
-Predicted boxes	3,063
-Matched persons	2,425
-Missed GT persons	186
-Unmatched prediction boxes	638
-Overall matched ratio	0.9288
+### Confidence 0.25
+
+| Measurement                | Result |
+| -------------------------- | ------ |
+| Test images                | 579    |
+| Images with GT persons     | 355    |
+| Images with predictions    | 369    |
+| Zero-prediction images     | 210    |
+| Ground-truth persons       | 2,611  |
+| Predicted boxes            | 3,063  |
+| Matched persons            | 2,425  |
+| Missed GT persons          | 186    |
+| Unmatched prediction boxes | 638    |
+| Overall matched ratio      | 0.9288 |
 
 Of the 210 zero-prediction images:
 
-202 contained no persons.
-8 contained persons.
+- 202 contained no persons.
+- 8 contained persons.
 
 The 8 complete-failure images contained a total of 9 ground-truth persons.
 
-Size analysis
+### Size analysis
 
-Using the project-wide small-object definition of width <32 px OR height <32 px:
+Using the project-wide small-object definition of width < 32 px OR
+height < 32 px:
 
-Size	GT	Matched	Recall
-Small	2,606	2,422	0.9294
-Medium	5	3	0.6000
-Large	0	0	N/A
+| Size   |    GT | Matched | Recall |
+| ------ | ----: | ------: | ------ |
+| Small  | 2,606 |   2,422 | 0.9294 |
+| Medium |     5 |       3 | 0.6000 |
+| Large  |     0 |       0 | N/A    |
 
-99.8% of the HIT-UAV test person instances were classified as small under this definition.
+99.8% of the HIT-UAV test person instances were classified as small under this
+definition.
 
-13. MT-005 Confidence 0.10 Diagnostic
+---
 
-A second prediction run was performed at confidence threshold 0.10 to investigate whether low-confidence detections were responsible for some of the missed persons.
+## 12. MT-005 Confidence 0.10 Diagnostic
 
-Confidence 0.10
-Measurement	Result
-Test images	579
-Images with predictions	384
-Zero-prediction images	195
-Predicted boxes	3,768
-Matched persons	2,468
-Missed GT persons	143
-Unmatched prediction boxes	1,300
-Overall matched ratio	0.9452
+A second prediction run was performed at confidence threshold 0.10 to
+investigate whether low-confidence detections were responsible for some of the
+missed persons.
+
+### Confidence 0.10
+
+| Measurement                | Result |
+| -------------------------- | ------ |
+| Test images                | 579    |
+| Images with predictions    | 384    |
+| Zero-prediction images     | 195    |
+| Predicted boxes            | 3,768  |
+| Matched persons            | 2,468  |
+| Missed GT persons          | 143    |
+| Unmatched prediction boxes | 1,300  |
+| Overall matched ratio      | 0.9452 |
 
 Compared with confidence 0.25:
 
-705 additional predicted boxes were generated.
-43 additional persons were matched.
-43 fewer persons were missed.
-662 additional prediction boxes remained unmatched.
-Zero-prediction images decreased by 15.
-Zero-prediction images containing persons decreased by 4.
+- 705 additional predicted boxes were generated.
+- 43 additional persons were matched.
+- 43 fewer persons were missed.
+- 662 additional prediction boxes remained unmatched.
+- Zero-prediction images decreased by 15.
+- Zero-prediction images containing persons decreased by 4.
 
-The 43 recovered persons had detection confidences between approximately 0.1034 and 0.2490, with an average of approximately 0.1747.
+The 43 recovered persons had detection confidences between approximately
+0.1034 and 0.2490, with an average of approximately 0.1747.
 
-This indicates that some valid thermal-person detections are produced at relatively low confidence.
+This indicates that some valid thermal-person detections are produced at
+relatively low confidence.
 
-14. MT-005 Remaining-Miss Analysis
+---
 
-The remaining misses after the confidence 0.10 diagnostic were examined further.
+## 13. MT-005 Remaining-Miss Analysis
 
-The traceable per-person diagnostic identified 142 remaining missed persons. The small difference from the aggregate 143-miss result is due to the matching procedure used by the diagnostic.
+The remaining misses after the confidence 0.10 diagnostic were examined
+further.
 
-Remaining-miss categories
-Category	Count	Percentage
-No overlapping prediction at confidence 0.10	35	~24.6%
-Prediction exists but IoU < 0.50	107	~75.4%
-Total traceable misses	142	100%
-Remaining-miss size
-Measurement	Value
-Average width	13.30 px
-Average height	18.25 px
-Minimum width	4 px
-Minimum height	8 px
-Maximum width	87 px
-Maximum height	74 px
+The traceable per-person diagnostic identified 142 remaining missed persons.
+The small difference from the aggregate 143-miss result is due to the matching
+procedure used by the diagnostic.
 
-The majority of the remaining missed persons had some overlapping prediction but insufficient IoU for a match.
+### Remaining-miss categories
 
-This suggests that the dominant remaining limitation is localization of very small thermal targets, with a secondary issue of complete recognition failures.
+| Category                                     | Count | Percentage |
+| -------------------------------------------- | ----: | ---------- |
+| No overlapping prediction at confidence 0.10  |    35 | ~24.6%     |
+| Prediction exists but IoU < 0.50              |   107 | ~75.4%     |
+| Total traceable misses                        |   142 | 100%       |
 
-Lowering the confidence threshold alone therefore does not fully solve the problem: it recovered 43 of the 186 misses while also adding 662 unmatched prediction boxes.
+### Remaining-miss size
 
-15. MT-006 - Thermal Small-Object Resolution Experiment
+| Measurement    | Value    |
+| -------------- | -------- |
+| Average width  | 13.30 px |
+| Average height | 18.25 px |
+| Minimum width  | 4 px     |
+| Minimum height | 8 px     |
+| Maximum width  | 87 px    |
+| Maximum height | 74 px    |
 
-MT-006 is the current controlled experiment.
+The majority of the remaining missed persons had some overlapping prediction
+but insufficient IoU for a match.
 
-The purpose is to determine whether increasing input resolution from 640 x 640 to 960 x 960 improves thermal person detection while keeping the other major training conditions unchanged.
+This suggests that the dominant remaining limitation is **localization** of
+very small thermal targets, with a secondary issue of complete recognition
+failures.
 
-Configuration
-Parameter	Value
-Model	YOLO26n
-Dataset	HIT-UAV Person
-Input size	960 x 960
-Epochs	50
-Batch size	4
-GPU	NVIDIA RTX 4050 Laptop GPU
-AMP	Enabled
-Dataset split	Same as MT-005
-Training objective	Small-object resolution experiment
+Lowering the confidence threshold alone therefore does not solve the problem:
+it recovered 43 of the 186 misses while adding 662 unmatched prediction boxes.
 
-Status: RUNNING
+This result defined the two follow-up experiments:
 
-Final validation and test metrics will be added after MT-006 completes.
+- **MT-006** - increase input resolution, so that small targets occupy more
+  pixels at the model input.
+- **MT-007** - increase the effective scale of small targets during training
+  through a crop-based training set.
 
-No conclusions should be drawn from MT-006 until the run has completed and the results have been evaluated.
-```
+---
+
+## 14. MT-006 - Thermal Resolution Experiment (960 px)
+
+MT-006 tested whether increasing the input resolution from 640 x 640 to
+960 x 960 improves thermal person detection, with all other major training
+conditions held constant.
+
+### Configuration
+
+| Parameter     | Value                      |
+| ------------- | -------------------------- |
+| Model         | YOLO26n                    |
+| Dataset       | HIT-UAV Person             |
+| Input size    | 960 x 960                  |
+| Epochs        | 50                         |
+| Batch size    | 4                          |
+| GPU           | NVIDIA RTX 4050 Laptop GPU |
+| AMP           | Enabled                    |
+| Dataset split | Same as MT-005             |
+
+The run was interrupted and resumed from `last.pt` at epoch 25, so the recorded
+wall-clock time is not meaningful. At approximately 245 s/epoch the run
+represents roughly 3.4 hours of GPU time.
+
+### Validation results (290 images, 1,168 instances)
+
+| Metric    | MT-005 | MT-006 | Change |
+| --------- | ------ | ------ | ------ |
+| Precision | 0.890  | 0.896  | +0.006 |
+| Recall    | 0.875  | 0.857  | -0.018 |
+| mAP@50    | 0.919  | 0.912  | -0.007 |
+| mAP@50-95 | 0.500  | 0.510  | +0.010 |
+
+Best epoch: 50.
+
+**Status:** Completed.
+
+### Held-out test results (579 images, 2,611 instances)
+
+| Metric    | MT-005 | MT-006 | Change |
+| --------- | ------ | ------ | ------ |
+| Precision | 0.897  | 0.903  | +0.006 |
+| Recall    | 0.891  | 0.880  | -0.011 |
+| mAP@50    | 0.933  | 0.926  | -0.007 |
+| mAP@50-95 | 0.510  | 0.526  | +0.016 |
+
+These figures are from the unified benchmark (section 17) and were produced
+with identical evaluation settings for every model.
+
+### Observation
+
+The resolution increase produced a **localization** improvement and a
+**detection** regression:
+
+- mAP@50-95 increased by 0.016. That metric is dominated by box quality at
+  stricter IoU thresholds, which is consistent with the MT-005 remaining-miss
+  analysis identifying localization as the dominant failure mode.
+- mAP@50 and recall decreased slightly, meaning MT-006 finds marginally fewer
+  persons overall.
+
+This is the opposite of the RGB result, where resolution improved every metric.
+The explanation is that HIT-UAV images are natively 640 x 512. Upscaling to
+960 x 960 adds no new sensor information; it only changes the scale at which
+the network sees the targets. The VisDrone RGB images are much larger, so a
+higher input resolution there preserved real detail that was previously
+discarded by downscaling.
+
+---
+
+## 15. MT-007 - Thermal Crop-Augmented Training
+
+MT-007 tested whether increasing the *apparent* size of small thermal targets
+during training improves detection, without changing inference resolution.
+
+Instead of tiling at inference time (which was tested and rejected for RGB in
+section 7), the tiling was moved into the training set.
+
+### Crop dataset construction
+
+| Parameter                | Value                                |
+| ------------------------ | ------------------------------------ |
+| Crop size                | 256 x 256                            |
+| Crop overlap             | 25%                                  |
+| Minimum visible fraction | 0.50 of the original box             |
+| Empty crops per image    | at most 2                            |
+| Original images retained | Yes                                  |
+| Validation / test splits | Copied unchanged from HIT-UAV Person |
+
+Keeping the validation and test splits untouched is what makes MT-005, MT-006
+and MT-007 directly comparable: only the training data changed.
+
+Generated by `scripts/create_hit_uav_crops.py`.
+
+### Crop training set statistics
+
+| Content                | Images     | Person annotations |
+| ---------------------- | ---------: | -----------------: |
+| Original full images   |      2,029 |              8,533 |
+| Generated 256 px crops |      9,241 |             16,942 |
+| **Total training set** | **11,270** |         **25,475** |
+
+Of the 11,270 training images, 6,521 contain at least one person and 4,749 are
+background-only.
+
+The generated crops were visually inspected before training.
+
+### Configuration
+
+| Parameter     | Value                         |
+| ------------- | ----------------------------- |
+| Model         | YOLO26n                       |
+| Dataset       | HIT-UAV Person + 256 px crops |
+| Input size    | 640 x 640                     |
+| Epochs        | 50                            |
+| Batch size    | 8                             |
+| GPU           | NVIDIA RTX 4050 Laptop GPU    |
+| AMP           | Enabled                       |
+| Training time | 8.146 hours                   |
+
+Because a 256 px crop is upscaled to the 640 px model input, every person in a
+crop is presented to the network at roughly 2.5x its original scale.
+
+### Validation results (290 images, 1,168 instances)
+
+| Metric    | MT-005 | MT-007 | Change |
+| --------- | ------ | ------ | ------ |
+| Precision | 0.890  | 0.890  | 0.000  |
+| Recall    | 0.875  | 0.861  | -0.014 |
+| mAP@50    | 0.919  | 0.910  | -0.009 |
+| mAP@50-95 | 0.500  | 0.495  | -0.005 |
+
+Best epoch: 44.
+
+**Status:** Completed.
+
+### Held-out test results (579 images, 2,611 instances)
+
+| Metric    | MT-005 | MT-007 | Change |
+| --------- | ------ | ------ | ------ |
+| Precision | 0.897  | 0.895  | -0.002 |
+| Recall    | 0.891  | 0.873  | -0.018 |
+| mAP@50    | 0.933  | 0.926  | -0.007 |
+| mAP@50-95 | 0.510  | 0.504  | -0.006 |
+
+### Observation
+
+Crop-based training did not improve thermal detection. Every test metric was
+equal to or slightly below MT-005, at roughly five times the training cost.
+
+---
+
+## 16. MT-005 vs MT-007 Per-Person Comparison
+
+Because the aggregate metrics for MT-005 and MT-007 are close, a per-person
+comparison was performed on all 2,611 test-set ground-truth persons to check
+whether the two models fail on the *same* people or on different people.
+
+Matching used IoU >= 0.50 at confidence 0.25
+(`scripts/compare_mt005_vs_mt007.py`).
+
+| Category               | Persons | Share |
+| ---------------------- | ------: | ----- |
+| Matched by both models |   2,327 | 89.1% |
+| Missed by both models  |     131 | 5.0%  |
+| Matched by MT-005 only |      98 | 3.8%  |
+| Matched by MT-007 only |      55 | 2.1%  |
+
+### Box size by category (test-set ground truth)
+
+| Category        | Mean width | Mean height |
+| --------------- | ---------- | ----------- |
+| Matched by both | 12.74 px   | 19.61 px    |
+| Missed by both  | 13.94 px   | 18.92 px    |
+| MT-005 only     | 13.72 px   | 19.34 px    |
+| MT-007 only     | 12.62 px   | 18.58 px    |
+
+### Localization quality on commonly matched persons
+
+| Measurement     | MT-005 | MT-007 |
+| --------------- | ------ | ------ |
+| Mean IoU        | 0.784  | 0.783  |
+| Mean confidence | 0.663  | 0.649  |
+
+### Observation
+
+Two results follow from this comparison.
+
+1. **The models are not interchangeable.** 153 persons (5.9% of the test set)
+   are found by exactly one of the two models. MT-007 recovers 55 persons that
+   MT-005 misses. That is a genuine ensemble/fusion opportunity, even though
+   MT-007 is worse on aggregate.
+
+2. **The 131 persons missed by both models are not distinguished by size.**
+   Their mean box dimensions are almost identical to the persons that both
+   models detect successfully. Size alone therefore does not explain the
+   remaining failures; they are more likely caused by thermal contrast,
+   occlusion, or posture.
+
+The second point is the important one: it means further scale-oriented
+experiments (higher resolution, more aggressive cropping) are unlikely to
+recover the remaining hard cases. MT-006 and MT-007 both tested scale, and
+neither improved on MT-005.
+
+---
+
+## 17. Unified Model Benchmark
+
+All reference models were re-evaluated with one script
+(`scripts/benchmark_models.py`) under identical settings so that the reported
+numbers are directly comparable.
+
+### Benchmark settings
+
+| Parameter       | Value                                      |
+| --------------- | ------------------------------------------ |
+| Confidence      | 0.001 (AP-standard, threshold-independent) |
+| NMS IoU         | 0.70                                       |
+| Batch size      | 1                                          |
+| Evaluation size | each model's own training resolution       |
+| Device          | RTX 4050 Laptop GPU                        |
+
+Each model is evaluated in a separate process. Evaluating several models in one
+process keeps earlier models resident in VRAM on a 6 GB GPU and inflates the
+reported inference time.
+
+### Results
+
+| Experiment | Modality | Split | imgsz | Images | Instances | P     | R     | mAP@50 | mAP@50-95 | Inference |
+| ---------- | -------- | ----- | ----: | -----: | --------: | ----- | ----- | ------ | --------- | --------- |
+| MT-004     | RGB      | val   |  1280 |    548 |    13,969 | 0.744 | 0.570 | 0.654  | 0.300     | 24.6 ms   |
+| MT-005     | Thermal  | test  |   640 |    579 |     2,611 | 0.897 | 0.891 | 0.933  | 0.510     | 25.4 ms   |
+| MT-006     | Thermal  | test  |   960 |    579 |     2,611 | 0.903 | 0.880 | 0.926  | 0.526     | 25.0 ms   |
+| MT-007     | Thermal  | test  |   640 |    579 |     2,611 | 0.895 | 0.873 | 0.926  | 0.504     | 25.5 ms   |
+
+The MT-004 row differs marginally from section 3 (0.744/0.570/0.654/0.300 vs
+0.738/0.563/0.653/0.297) because the benchmark applies uniform confidence and
+NMS settings to every model rather than the per-run defaults.
+
+### Interpretation
+
+**This table must not be read as "thermal is better than RGB."** The two
+modalities are evaluated on different datasets:
+
+- VisDrone is a large, cluttered, high-density urban RGB dataset with up to
+  hundreds of annotated persons per image, many of them partially occluded.
+- HIT-UAV is a smaller thermal dataset in which a person's heat signature is
+  high-contrast against a cool background, with far fewer persons per image.
+
+The RGB task as posed by VisDrone is intrinsically harder. The comparison that
+*is* valid is within each modality:
+
+- Within RGB: resolution helps (MT-002 -> MT-003 -> MT-004).
+- Within thermal: MT-005 at 640 px remains the best overall model. Neither the
+  resolution increase (MT-006) nor the crop augmentation (MT-007) improved it,
+  although MT-006 gives the best mAP@50-95, i.e. the best box localization.
+
+The inference timings are validator throughput under identical conditions on a
+laptop GPU with `batch=1` and `workers=0`. They are dominated by per-image
+Python and data-loading overhead, and should not be quoted as deployment
+latency. A dedicated latency benchmark is required before companion-computer
+selection.
+
+### Selected reference models
+
+| Role                 | Model  | Reason                                           |
+| -------------------- | ------ | ------------------------------------------------ |
+| RGB reference        | MT-004 | Best RGB metrics                                 |
+| Thermal reference    | MT-005 | Best thermal recall and mAP@50, lowest cost      |
+| Thermal localization | MT-006 | Best mAP@50-95; candidate if box quality matters |
+
+---
+
+## 18. Custom Error-Analysis Comparison (Thermal)
+
+The three thermal models were also compared using the project's own greedy
+one-to-one matching analysis at confidence 0.25 and IoU >= 0.50 on the held-out
+test split. This analysis answers an operational question ("how many actual
+people were found at the deployment threshold?") rather than an AP question.
+
+| Measurement                       | MT-005 | MT-006 | MT-007 |
+| --------------------------------- | -----: | -----: | -----: |
+| Ground-truth persons              |  2,611 |  2,611 |  2,611 |
+| Predicted boxes                   |  3,063 |  2,933 |  2,952 |
+| Matched persons                   |  2,425 |  2,404 |  2,382 |
+| Missed persons                    |    186 |    207 |    229 |
+| Unmatched prediction boxes        |    638 |    529 |    570 |
+| Matched ratio (recall)            | 0.9288 | 0.9207 | 0.9123 |
+| Matched / predicted (precision)   | 0.7917 | 0.8196 | 0.8069 |
+| Images producing predictions      |    369 |    348 |    354 |
+| Images with persons but no output |      8 |     19 |     16 |
+| Persons in those images           |      9 |     28 |     25 |
+
+### Observation
+
+At the operational threshold of 0.25, MT-005 finds the most persons (2,425) and
+has the fewest complete-failure images (8 images / 9 persons).
+
+MT-006 and MT-007 are more conservative: they emit fewer boxes and therefore
+have higher custom precision, but they also produce more images in which a
+person is present and nothing at all is reported. For a search-and-rescue
+payload a complete-failure image is the most costly error mode, which
+reinforces MT-005 as the operational thermal model.
+
+---
+
+## 19. Conclusions from the Detection Experiments
+
+1. **Resolution is the dominant lever for RGB.** MT-002 -> MT-004 improved
+   mAP@50 from ~0.50 to 0.654, but recall remains the limiting factor (0.570).
+
+2. **Resolution is not a lever for HIT-UAV thermal.** The source imagery is
+   640 x 512, so upscaling adds no information. MT-006 improved box quality
+   (mAP@50-95 +0.016) but reduced recall.
+
+3. **Crop-based training is not a lever either.** MT-007 cost 8.1 hours and did
+   not improve any test metric.
+
+4. **Scale is no longer the bottleneck for the remaining thermal failures.**
+   The 131 persons missed by both MT-005 and MT-007 have essentially the same
+   box sizes as the persons that are detected correctly.
+
+5. **MT-005 and MT-007 fail on different people.** 153 persons are found by
+   exactly one of them, which makes model ensembling a more promising direction
+   than further single-model scale tuning.
+
+6. **The thermal detector is close to a usable operating point.** At confidence
+   0.25 it finds 92.9% of the held-out persons, with complete failure on only
+   8 of 355 person-containing images.
+
+The next stages therefore move away from further single-modality accuracy
+tuning and toward system integration: temporal tracking, movement detection, a
+real-time pipeline, and embedded deployment.
