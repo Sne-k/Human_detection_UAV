@@ -926,3 +926,301 @@ reinforces MT-005 as the operational thermal model.
 The next stages therefore move away from further single-modality accuracy
 tuning and toward system integration: temporal tracking, movement detection, a
 real-time pipeline, and embedded deployment.
+
+---
+
+## 20. MT-007 Confidence 0.10 Diagnostic
+
+MT-007 was re-run at confidence 0.10 to test whether its misses are scored
+below the operating threshold or absent altogether.
+
+Comparing MT-005 at 0.25 against MT-007 at 0.10 would confound two variables,
+since MT-005 itself changes substantially when its threshold is lowered. Both
+models were therefore evaluated at both thresholds with identical matching
+(`scripts/compare_mt005_vs_mt007_conf010.py`), holding the test set, ground
+truth, input size and IoU criterion fixed.
+
+The MT-005 figures reproduce the section 12 results exactly, which confirms the
+two analyses are directly comparable.
+
+### MT-007 at both thresholds
+
+| Measurement                        | conf 0.25 | conf 0.10 | Change |
+| ---------------------------------- | --------: | --------: | -----: |
+| Ground-truth persons               |     2,611 |     2,611 |      - |
+| Predicted boxes                    |     2,952 |     3,661 |   +709 |
+| Matched persons                    |     2,382 |     2,453 |    +71 |
+| Missed persons                     |       229 |       158 |    -71 |
+| Unmatched prediction boxes         |       570 |     1,208 |   +638 |
+| Matched ratio                      |    0.9123 |    0.9395 | +0.027 |
+| Zero-prediction images             |       225 |       202 |    -23 |
+| Zero-prediction images with people |        16 |        10 |     -6 |
+| Persons in those images            |        25 |        12 |    -13 |
+
+### Side by side with MT-005 at 0.10
+
+| Measurement                        | MT-005 | MT-007 |
+| ---------------------------------- | -----: | -----: |
+| Predicted boxes                    |  3,768 |  3,661 |
+| Matched persons                    |  2,468 |  2,453 |
+| Missed persons                     |    143 |    158 |
+| Unmatched prediction boxes         |  1,300 |  1,208 |
+| Matched ratio                      | 0.9452 | 0.9395 |
+| Zero-prediction images with people |      4 |     10 |
+
+### Per-person agreement at 0.10
+
+| Category               | Persons | Share | At 0.25 |
+| ---------------------- | ------: | ----- | ------: |
+| Matched by both models |   2,397 | 91.8% |   2,327 |
+| Missed by both models  |      87 |  3.3% |     131 |
+| Matched by MT-005 only |      71 |  2.7% |      98 |
+| Matched by MT-007 only |      56 |  2.1% |      55 |
+
+### Observation
+
+Lowering the threshold recovers a meaningful but minority share of the shared
+failures: persons missed by both models fall from 131 to 87, so **44 of the 131
+(33.6%) were suppressed by the confidence threshold** and 87 were not found at
+all.
+
+MT-007 pays less for its recovery than MT-005 does - 71 persons for 638 extra
+unmatched boxes, against MT-005's 43 for 662 - but it starts from a worse
+position and still ends below MT-005 in absolute terms.
+
+The cost of this route is poor regardless: about **15 extra false positives per
+person recovered**. Threshold lowering is not a good answer on its own, which
+motivated the failure characterisation in section 21.
+
+---
+
+## 21. Characterising the Shared Failures
+
+The persons that both models miss are the ones that matter: a person missed by
+only one model can be recovered by ensembling, but a person missed by both is a
+capability gap.
+
+`scripts/analyze_common_failures.py` characterises them along every axis the
+dataset provides, always against the detected persons as a baseline, because a
+property of the failures is only interesting if it differs from the population.
+
+Scene metadata is parsed from the HIT-UAV filename convention
+`<light>_<altitude>_<angle>_0_<id>`, verified across the test split: field 0 is
+day/night, field 1 is flight altitude in metres (60-130), field 2 is camera
+angle in degrees (30-90).
+
+### Failure mode is the primary split
+
+A miss with an overlapping prediction that fell short of IoU 0.50 is a
+**localisation** failure. A miss with no overlapping prediction anywhere is a
+**recognition** failure. The two require different fixes.
+
+| Failure mode | conf 0.25  | conf 0.10  |
+| ------------ | ---------: | ---------: |
+| Localisation | 88 (67.2%) | 68 (78.2%) |
+| Recognition  | 43 (32.8%) | 19 (21.8%) |
+| Total        |        131 |         87 |
+
+At confidence 0.10, **78% of the shared failures are localisation failures**:
+the model does produce a box on the person, but not an accurate enough one.
+
+### The localisation failures are near misses
+
+Best-overlap IoU for the 68 localisation failures at conf 0.10:
+
+| Best-overlap IoU | Count | Share |
+| ---------------- | ----: | ----- |
+| 0.00 - 0.10      |     2 | 2.9%  |
+| 0.10 - 0.25      |     4 | 5.9%  |
+| 0.25 - 0.40      |    25 | 36.8% |
+| 0.40 - 0.50      |    37 | 54.4% |
+
+Median 0.417. **91% sit between 0.25 and 0.50**, and over half are within 0.10
+of the matching threshold.
+
+The margin is tighter than it looks. For a typical 12 x 19 px person, a
+4-pixel horizontal offset is enough to drop IoU below 0.50. These are not gross
+errors.
+
+### Size does not explain the failures
+
+| Group    | Small | Medium or larger |
+| -------- | ----: | ---------------: |
+| Missed   |    86 |         1 (1.1%) |
+| Detected | 2,394 |         3 (0.1%) |
+
+Mean width is 13.6 px for missed and 12.8 px for detected - the missed persons
+are marginally *wider*. Median width is identical at 12.0 px.
+
+**Target scale is not the discriminator.** This is consistent with MT-006 and
+MT-007 both failing: each addressed scale, which was never the problem.
+
+### Crowding is the discriminator
+
+Share of each group with a neighbouring annotated person closer than a given
+distance:
+
+| Threshold | Localisation failures | Recognition failures | Detected |
+| --------- | --------------------: | -------------------: | -------: |
+| < 10 px   |                 32.8% |                18.8% |     5.7% |
+| < 15 px   |                 65.7% |                31.2% |    20.6% |
+| < 20 px   |                 77.6% |                37.5% |    32.3% |
+| < 30 px   |                 88.1% |                37.5% |    51.4% |
+
+Median nearest-neighbour distance is about 13 px for the localisation failures
+against 29 px for detected persons. They are **5.8x more likely** than detected
+persons to have a neighbour within 10 px, and 88% have one within 30 px.
+
+The box shapes agree. Median height/width is 1.33 for the failures against 1.67
+for detected persons, and 38% of localisation failures have an aspect ratio
+below 1.2 against 22% of detected persons. A box squarer than a standing person
+seen from above is what a box spanning two adjacent people looks like.
+
+### Recognition failures are a daylight problem
+
+| Group                 | Daylight share |
+| --------------------- | -------------: |
+| Recognition failures  |          57.9% |
+| Localisation failures |          23.5% |
+| Detected persons      |          19.9% |
+
+Recognition failures are **2.9x over-represented in daylight**. In daytime
+thermal imagery the background is warm, so a person's heat signature stands out
+far less against it. The single largest failure in the test set - an 87 x 74 px
+person, alone in the frame, with zero overlap from any model - is a daylight
+image.
+
+### Scene conditions
+
+Over-representation of the shared failures relative to detected persons:
+
+| Camera angle | Over-representation |
+| ------------ | ------------------: |
+| 40 degrees   |               x1.98 |
+| 90 degrees   |               x1.72 |
+| 30 degrees   |               x0.52 |
+
+| Altitude | Over-representation |
+| -------- | ------------------: |
+| 110 m    |               x1.84 |
+| 100 m    |               x1.81 |
+| 90 m     |               x1.80 |
+| 60 m     |               x0.56 |
+
+Higher altitudes and oblique 40-degree views are harder, as expected. The
+130 m figure (x0.63) runs against the trend but rests on only 4 missed persons
+and should not be relied on.
+
+### Conclusion
+
+The remaining thermal detection problem is **not** small-object detection. It
+is two separate problems:
+
+1. **Crowding-induced localisation failure (78% of shared failures).** People
+   standing close together produce boxes that are close but below IoU 0.50.
+2. **Daylight thermal contrast (22%).** Warm backgrounds suppress the signature
+   entirely.
+
+Neither is addressed by higher resolution or by crop augmentation, which
+explains the MT-006 and MT-007 results directly.
+
+---
+
+## 22. Thermal Model Ensembling
+
+The per-person comparisons showed the three thermal models failing on different
+people. Checking MT-006 against the 131 persons that MT-005 and MT-007 both
+miss at confidence 0.25:
+
+| Measurement                 | Result     |
+| --------------------------- | ---------- |
+| MT-006 recovers, of the 131 | 29 (22.1%) |
+| Missed by all three models  | 102        |
+
+Coverage of the 2,611 test persons:
+
+| Model set                  | Matched | Recall |
+| -------------------------- | ------: | ------ |
+| MT-005 alone (best single) |   2,425 | 92.88% |
+| MT-006 alone               |   2,404 | 92.07% |
+| MT-007 alone               |   2,382 | 91.23% |
+| MT-005 + MT-007            |   2,480 | 94.98% |
+| MT-005 + MT-006            |   2,481 | 95.02% |
+| All three                  |   2,509 | 96.09% |
+
+That union is an oracle bound: it assumes fused boxes can be produced without
+also inheriting every model's false positives. `scripts/ensemble_thermal.py`
+measures the real system, pooling the three models' predictions, fusing
+overlapping boxes, and scoring with the same person-level matching.
+
+### Measured fusion results, all models at confidence 0.25
+
+| Method | Min votes | Predicted | Matched | Missed | Unmatched | Recall | Precision | Blind images |
+| ------ | --------: | --------: | ------: | -----: | --------: | ------ | --------- | -----------: |
+| NMS    |         1 |     3,198 |   2,470 |    141 |       728 | 0.9460 | 0.7724    |            4 |
+| NMS    |         2 |     2,762 |   2,393 |    218 |       369 | 0.9165 | 0.8664    |           15 |
+| NMS    |         3 |     2,523 |   2,301 |    310 |       222 | 0.8813 | 0.9120    |           28 |
+| WBF    |         1 |     3,198 |   2,476 |    135 |       722 | 0.9483 | 0.7742    |            4 |
+| WBF    |         2 |     2,762 |   2,402 |    209 |       360 | 0.9200 | 0.8697    |           15 |
+| WBF    |         3 |     2,523 |   2,309 |    302 |       214 | 0.8843 | 0.9152    |           28 |
+
+Weighted box fusion beats plain NMS at every vote level, by 6 to 9 persons.
+This is the effect predicted by section 21: averaging several independent
+near-miss boxes recovers a better-centred box than any single one of them, and
+over half the localisation failures sit within 0.10 IoU of the threshold.
+
+### Ensembling versus lowering the threshold
+
+Both routes trade false positives for recall. They are not equally priced.
+
+| Configuration            | Matched | Missed | Unmatched | Recall | Precision | Blind images |
+| ------------------------ | ------: | -----: | --------: | ------ | --------- | -----------: |
+| MT-005 @ 0.25 (baseline) |   2,425 |    186 |       638 | 0.9288 | 0.7917    |            8 |
+| MT-005 @ 0.10            |   2,468 |    143 |     1,300 | 0.9452 | 0.6550    |            4 |
+| WBF ensemble @ 0.25      |   2,476 |    135 |       722 | 0.9483 | 0.7742    |            4 |
+
+Cost per additional person recovered, against the MT-005 baseline:
+
+| Route           | Persons gained | Extra unmatched boxes | Cost per person |
+| --------------- | -------------: | --------------------: | --------------: |
+| Lower threshold |             43 |                   662 |            15.4 |
+| WBF ensemble    |             51 |                    84 |             1.6 |
+
+**The ensemble recovers more people than threshold lowering, at roughly a tenth
+of the false-positive cost**, and beats it on every reported measure: more
+matched, fewer missed, 578 fewer unmatched boxes, higher precision, and the
+same number of images where a person is present but nothing is reported.
+
+### Cost
+
+The ensemble runs three models per frame. Section 17 and the latency benchmark
+both show the models are launch-bound at batch 1, so three sequential models
+cost roughly three times the frame budget, which the current pipeline cannot
+absorb at full rate. Whether this is affordable depends on exported-model
+latency, which is not yet measured.
+
+An ensemble is therefore established as the best-performing thermal
+configuration, but not yet as the deployable one.
+
+---
+
+## 23. Where the Detector Stands
+
+Seven training experiments and four diagnostic studies support a single
+conclusion: **single-model scale tuning is exhausted, and the remaining
+failures have named causes.**
+
+| Direction tested           | Experiment | Outcome                          |
+| -------------------------- | ---------- | -------------------------------- |
+| Higher RGB resolution      | MT-003/004 | Worked; recall still the limit   |
+| Inference-time tiling      | RGB study  | No improvement                   |
+| Higher thermal resolution  | MT-006     | Localisation up, recall down     |
+| Crop-augmented training    | MT-007     | No improvement, 5x training cost |
+| Lower confidence threshold | Diagnostic | 15 false positives per person    |
+| Model ensembling           | Section 22 | 1.6 false positives per person   |
+
+The evidence for the next training experiment, should one be run, is now
+specific rather than speculative. Any MT-008 should target crowd separation or
+daylight thermal contrast, because those are the measured failure modes, and
+should not target target scale, which three separate studies have now ruled
+out.

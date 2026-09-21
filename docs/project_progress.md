@@ -40,10 +40,12 @@
 |    30 | Movement detection/tracking                               | Completed   |
 |    31 | Real-time inference pipeline                              | Completed   |
 |    32 | Model export for embedded inference (ONNX)                | Completed   |
-|    33 | RGB/thermal model ensembling investigation                | Pending     |
-|    34 | Embedded companion-computer selection                     | Pending     |
-|    35 | Embedded model deployment/benchmarking                    | Pending     |
-|    36 | UAV payload/system integration                            | Pending     |
+|    33 | MT-007 confidence-threshold diagnostic                    | Completed   |
+|    34 | Shared-failure characterisation                           | Completed   |
+|    35 | Thermal model ensembling investigation                    | Completed   |
+|    36 | Embedded companion-computer selection                     | Pending     |
+|    37 | Embedded model deployment/benchmarking                    | Pending     |
+|    38 | UAV payload/system integration                            | Pending     |
 
 ---
 
@@ -323,6 +325,61 @@ the exported shape itself.
 The exports are verified numerically but their latency has not yet been
 measured, because the installed ONNX Runtime has no CUDA provider.
 
+### Shared-Failure Diagnosis
+
+MT-007 was re-run at confidence 0.10 and compared against MT-005 at the same
+threshold, then the persons missed by both models were characterised in detail.
+
+Lowering the threshold recovers 44 of the 131 shared failures (33.6%), leaving
+87 that neither model finds at all. The cost is poor: about 15 extra false
+positives per person recovered.
+
+Characterising the remaining 87 produced the key result of this phase. The
+problem is **not** small-object detection:
+
+| Finding                   | Failures | Detected persons |
+| ------------------------- | -------- | ---------------- |
+| Classified small          | 86 of 87 | 2,394 of 2,397   |
+| Median box width          | 12.0 px  | 12.0 px          |
+| Neighbour within 10 px    | 32.8%    | 5.7%             |
+| Median nearest neighbour  | ~13 px   | 29 px            |
+
+Size does not separate the failures from the successes at all. Two causes do:
+
+1. **Crowding-induced localisation failure (78%).** The model produces a box on
+   the person, but people standing close together yield boxes that fall just
+   below IoU 0.50 - 91% of them land between 0.25 and 0.50.
+2. **Daylight thermal contrast (22%).** Recognition failures are 2.9x
+   over-represented in daylight, where warm backgrounds suppress the heat
+   signature entirely.
+
+This explains the MT-006 and MT-007 results directly: both addressed target
+scale, which was never the limiting factor.
+
+### Thermal Model Ensembling
+
+Because the three thermal models fail on different people, their predictions
+were pooled and fused, then scored with the same person-level matching.
+
+| Configuration            | Matched | Missed | Unmatched | Recall | Precision |
+| ------------------------ | ------: | -----: | --------: | ------ | --------- |
+| MT-005 @ 0.25 (baseline) |   2,425 |    186 |       638 | 0.9288 | 0.7917    |
+| MT-005 @ 0.10            |   2,468 |    143 |     1,300 | 0.9452 | 0.6550    |
+| WBF ensemble @ 0.25      |   2,476 |    135 |       722 | 0.9483 | 0.7742    |
+
+Weighted box fusion beats plain NMS at every vote level, as predicted by the
+failure analysis: averaging independent near-miss boxes recovers a
+better-centred box than any single one.
+
+Against the baseline, the ensemble recovers 51 persons for 84 extra false
+positives (1.6 per person), where lowering the threshold recovers 43 for 662
+(15.4 per person) - roughly a tenth of the cost, and better on every reported
+measure.
+
+The ensemble runs three models per frame, so whether it is deployable depends
+on exported-model latency, which is not yet measured. It is established as the
+best-performing thermal configuration, not yet as the deployable one.
+
 ### Latency Benchmark
 
 A deployment latency benchmark replaced the validator throughput figures, which
@@ -365,8 +422,8 @@ and embedded deployment.
    identity-stability measurement against ground truth. The current validation
    uses a synthetic sequence and contains only one moving target, so it tests
    false positives well and false negatives barely at all.
-3. Investigate MT-005 + MT-007 ensembling to recover the 55 persons that only
-   MT-007 finds.
+3. Decide whether the WBF ensemble is affordable once exported-model latency is
+   known. If it is not, the fallback is MT-005 alone at 0.25.
 4. Select the companion computer using post-export measurements on candidate
    hardware.
 5. Benchmark the exported model on the selected embedded hardware.
