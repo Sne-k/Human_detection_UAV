@@ -42,6 +42,20 @@ The two-model fusion is the only configuration found that improves on the
 baseline **on every axis at once** - more people found, fewer missed, *fewer*
 false positives, higher precision. Its cost is 2x inference.
 
+### The evaluation criterion was stricter than the mission needs
+
+| Criterion | Box error rejected | People found | Recall |
+|-----------|-------------------:|-------------:|--------|
+| IoU 0.50 (CV convention) | 0.58 m | 2,425 | 0.9288 |
+| **IoU 0.25 (mission-derived)** | **1.05 m** | **2,511** | **0.9617** |
+
+Each fix is reported with a **+/- 3.8 m** position uncertainty, which is 3.6x
+larger than the box error IoU 0.25 still accepts - so a detection rejected for
+landing between 0.25 and 0.50 would have sent the rescue team to the same
+place. **86 more people, no model change.** mAP@50 is still reported as the
+comparable metric; see [`docs/training_log.md`](docs/training_log.md)
+section 32 for how to state both honestly.
+
 ### It works better in the dark
 
 | Condition | Images | Recall | Precision |
@@ -196,6 +210,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `coverage_requirements.py` | Derive required frame rate from the mission |
 | `sensor_resolution_study.py` | Detection vs thermal sensor resolution |
 | `operating_point.py` | Pick the confidence threshold from mission cost |
+| `operational_criterion.py` | Derive the IoU criterion from the geolocation error budget |
 
 ### Error analysis
 

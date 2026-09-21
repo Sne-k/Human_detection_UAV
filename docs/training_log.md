@@ -1827,3 +1827,94 @@ near-misses.
 
 It is worth one controlled run. It is also the last one worth making before
 the constraint moves from the detector to the hardware.
+
+---
+
+## 32. Is IoU 0.50 the Right Criterion?
+
+Every recall figure in this project uses IoU >= 0.50. That is the computer
+vision convention, inherited from PASCAL VOC and COCO. It has never been
+checked against what the payload actually delivers.
+
+The payload does not hand a rescue team a bounding box. It hands them a
+latitude and longitude with a stated uncertainty. A detection is operationally
+useful if it puts the team close enough to find the person, and "close enough"
+is set by the geolocation error budget, not by box overlap.
+
+### What each threshold means on the ground
+
+At 100 m with a 50 degree horizontal field of view and a 640 px sensor, the
+ground sampling distance is 0.146 m/px and a 12 x 19 px person is
+1.75 x 2.77 m. For two equal boxes offset along one axis:
+
+| IoU  | Pixel offset | Ground error | Matched | Missed | Recall | Unmatched |
+| ---- | -----------: | -----------: | ------: | -----: | ------ | --------: |
+| 0.50 |          4.0 |       0.58 m |   2,425 |    186 | 0.9288 |       638 |
+| 0.40 |          5.1 |       0.75 m |   2,484 |    127 | 0.9514 |       579 |
+| 0.30 |          6.5 |       0.94 m |   2,509 |    102 | 0.9609 |       554 |
+| 0.25 |          7.2 |       1.05 m |   2,511 |    100 | 0.9617 |       552 |
+| 0.20 |          8.0 |       1.17 m |   2,514 |     97 | 0.9628 |       549 |
+| 0.10 |          9.8 |       1.43 m |   2,516 |     95 | 0.9636 |       547 |
+
+### The argument
+
+The geolocation fix reported for each detection carries a position error of
+**+/- 3.8 m** at 100 m nadir, dominated by attitude uncertainty at roughly
+1.75 m per degree.
+
+The box error that IoU 0.25 still accepts is **1.05 m**.
+
+**The coordinate handed to the rescue team is uncertain by 3.6 times more than
+the box error the criterion would reject.** A detection discarded for landing
+between IoU 0.25 and 0.50 would have been reported to the same place on the
+ground as one that passed. The rescue team walks to the same spot.
+
+Under the convention the detector finds 2,425 people. Under a criterion
+derived from the delivery mechanism it finds **2,511** - 86 more, and 86 fewer
+missed.
+
+Recall saturates below 0.25: dropping to 0.10 adds only five more. So 0.25 is
+not an arbitrary slide toward an easier number; it is the point where "the box
+is on the person" stops excluding anyone.
+
+This also re-reads section 29 from the other side. The near-miss boxes between
+IoU 0.25 and 0.50 were counted twice, once as a missed person and once as a
+false positive. Under the operational criterion most of them become what they
+physically are: a person, found, and localised well within the accuracy the
+system can report anyway.
+
+### How this must be reported
+
+The temptation here is obvious and must be resisted. Loosening a threshold
+until the number improves is metric-gaming, and the difference between that
+and what is argued above is entirely in whether the criterion is derived from
+something real.
+
+Two rules:
+
+1. **mAP@50 stays in the results.** It is the comparable academic metric, it
+   is what Rizk, Lygouras and the other reference systems report, and removing
+   it would make this work incomparable.
+2. **The operational figure is reported alongside, never instead**, and always
+   with the criterion named and this derivation attached. A recall figure
+   without its IoU threshold is meaningless.
+
+Stated correctly:
+
+> MT-005 achieves 0.933 mAP@50 on the held-out thermal test split. Under the
+> conventional IoU 0.50 matching criterion it recovers 92.9% of test-set
+> persons. Because the payload reports geolocated coordinates with a +/- 3.8 m
+> position uncertainty, a box error below roughly 1 m does not change where a
+> rescue team is directed; under a mission-derived IoU 0.25 criterion the
+> detector recovers 96.2%.
+
+That is defensible. "Our recall is 96.2%" on its own is not.
+
+### Why this matters more than another training run
+
+No model changed. Seven training directions were tested and none improved the
+baseline, while this costs nothing and recovers 86 people - more than any
+experiment in this project achieved, including the two-model ensemble's 31.
+
+The lesson is that the evaluation criterion was inherited rather than chosen,
+and it was stricter than the physics of the delivery mechanism requires.
