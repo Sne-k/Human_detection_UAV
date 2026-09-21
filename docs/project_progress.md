@@ -39,11 +39,18 @@
 |    29 | Deployment latency benchmark                              | Completed   |
 |    30 | Movement detection/tracking                               | Completed   |
 |    31 | Real-time inference pipeline                              | Completed   |
-|    32 | Model export for embedded inference (ONNX)                | Pending     |
-|    33 | RGB/thermal model ensembling investigation                | Pending     |
-|    34 | Embedded companion-computer selection                     | Pending     |
-|    35 | Embedded model deployment/benchmarking                    | Pending     |
-|    36 | UAV payload/system integration                            | Pending     |
+|    32 | Model export for embedded inference (ONNX)                | Completed   |
+|    33 | MT-007 confidence-threshold diagnostic                    | Completed   |
+|    34 | Shared-failure characterisation                           | Completed   |
+|    35 | Thermal model ensembling investigation                    | Completed   |
+|    36 | Failure-mechanism verification                            | Completed   |
+|    37 | MT-005 frozen as thermal baseline                         | Completed   |
+|    38 | Three-model WBF ensemble inference pipeline               | Completed   |
+|    39 | MT-008 mosaic ablation (crowd separation)                 | In progress |
+|    40 | Candidate comparison A / B / C                            | Pending     |
+|    41 | Embedded companion-computer selection                     | Pending     |
+|    42 | Embedded model deployment/benchmarking                    | Pending     |
+|    43 | UAV payload/system integration                            | Pending     |
 
 ---
 
@@ -297,6 +304,123 @@ composited person that genuinely moves):
 With compensation the single flagged track matched the composited person's
 known trajectory across all 120 frames.
 
+### Model Export
+
+Both reference models were exported to ONNX and verified against the PyTorch
+models on 150 real dataset images, rather than on random tensors.
+
+Verification found that the export input shape is the critical parameter. An
+ONNX graph has one fixed input shape, while the PyTorch predict path
+letterboxes rectangularly. For MT-005 on a 640 x 512 thermal sensor:
+
+| Export shape       | Boxes      | Mean IoU | Lost detections | Verdict |
+| ------------------ | ---------- | -------- | --------------: | ------- |
+| 640 x 640 (square) | 792 -> 778 | 0.972    |              27 | FAIL    |
+| 512 x 640 (native) | 792 -> 792 | 1.000    |               0 | PASS    |
+
+The square export silently loses 3.4% of detections. The graph itself is
+faithful - raw pre-NMS outputs agree to 1.7e-06 on the confidence channel - so
+this is a preprocessing mismatch, not an export defect.
+
+MT-004 exports with some drift (mean IoU 0.955), which is expected: VisDrone
+images have mixed aspect ratios, so no single fixed shape reproduces the
+PyTorch letterbox for every image. A deployed RGB pipeline must letterbox to
+the exported shape itself.
+
+The exports are verified numerically but their latency has not yet been
+measured, because the installed ONNX Runtime has no CUDA provider.
+
+### Shared-Failure Diagnosis
+
+MT-007 was re-run at confidence 0.10 and compared against MT-005 at the same
+threshold, then the persons missed by both models were characterised in detail.
+
+Lowering the threshold recovers 44 of the 131 shared failures (33.6%), leaving
+87 that neither model finds at all. The cost is poor: about 15 extra false
+positives per person recovered.
+
+Characterising the remaining 87 produced the key result of this phase. The
+problem is **not** small-object detection:
+
+| Finding                   | Failures | Detected persons |
+| ------------------------- | -------- | ---------------- |
+| Classified small          | 86 of 87 | 2,394 of 2,397   |
+| Median box width          | 12.0 px  | 12.0 px          |
+| Neighbour within 10 px    | 32.8%    | 5.7%             |
+| Median nearest neighbour  | ~13 px   | 29 px            |
+
+Size does not separate the failures from the successes at all. Two causes do:
+
+1. **Crowding-induced localisation failure (78%).** The model produces a box on
+   the person, but people standing close together yield boxes that fall just
+   below IoU 0.50 - 91% of them land between 0.25 and 0.50.
+2. **Daylight thermal contrast (22%).** Recognition failures are 2.9x
+   over-represented in daylight, where warm backgrounds suppress the heat
+   signature entirely.
+
+This explains the MT-006 and MT-007 results directly: both addressed target
+scale, which was never the limiting factor.
+
+### Failure-Mechanism Verification
+
+The crowding explanation was circumstantial - nearest-neighbour distance is
+only a proxy for visual crowding - so the mechanism was tested directly by
+examining what each near-miss prediction actually did.
+
+| Mechanism             | Count | Share of the 68 with a prediction |
+| --------------------- | ----: | --------------------------------: |
+| Merged, 2+ people     |    43 |                             63.2% |
+| Undersized box        |    20 |                             29.4% |
+| Ordinary displacement |     3 |                              4.4% |
+| Claimed by neighbour  |     2 |                              2.9% |
+
+The merged boxes average 2.03x the area of the person they should have covered,
+and 41 of 43 touch exactly two annotated people. Among the 2,397 successful
+detections only 4.46% involve a multi-person box, so the failures are about
+**14x more likely** to be merged boxes. The mechanism is confirmed, not merely
+correlated.
+
+The undersized group turned out to be a separate mechanism rather than
+displacement: those boxes are correctly centred but roughly half the annotated
+area (width ratio 0.651, height ratio 0.715), because the detector locks onto
+the bright heat signature while the annotation covers the whole body.
+
+A global box-enlargement fix was tested and **rejected**. Matched detections
+show no sizing bias at all (ratios 0.994 and 0.986), and a scale sweep gains
+only 9 persons at 1.05 before degrading sharply - losing 400 by 1.30. The
+undersized cases are per-instance failures, not a calibration bias.
+
+### Thermal Model Ensembling
+
+Because the three thermal models fail on different people, their predictions
+were pooled and fused, then scored with the same person-level matching.
+
+| Configuration            | Matched | Missed | Unmatched | Recall | Precision |
+| ------------------------ | ------: | -----: | --------: | ------ | --------- |
+| MT-005 @ 0.25 (baseline) |   2,425 |    186 |       638 | 0.9288 | 0.7917    |
+| MT-005 @ 0.10            |   2,468 |    143 |     1,300 | 0.9452 | 0.6550    |
+| WBF ensemble @ 0.25      |   2,476 |    135 |       722 | 0.9483 | 0.7742    |
+
+Weighted box fusion beats plain NMS at every vote level, as predicted by the
+failure analysis: averaging independent near-miss boxes recovers a
+better-centred box than any single one.
+
+Against the baseline, the ensemble recovers 51 persons for 84 extra false
+positives (1.6 per person), where lowering the threshold recovers 43 for 662
+(15.4 per person) - roughly a tenth of the cost.
+
+This is a trade, not a free gain. The ensemble's precision under the custom
+metric is **lower** than the MT-005 baseline's, 0.7742 against 0.7917, because
+of those 84 extra unmatched boxes. It improves recall and the missed-person
+count at some cost in false detections. For a rescue payload that is the right
+direction, since a missed person is the costlier error, but it should be
+reported as a trade.
+
+The ensemble runs three models per frame, which the eager pipeline could not
+absorb. The CUDA-graph measurement below resolves that: three graphed models
+cost 9.4 ms per frame, **4.2x faster than a single model runs today**. The
+ensemble is affordable.
+
 ### Latency Benchmark
 
 A deployment latency benchmark replaced the validator throughput figures, which
@@ -307,6 +431,21 @@ the development GPU: the CPU takes as long to enqueue kernels as the entire
 frame takes, so 1280 px costs the same as 640 px. Batch 8 removes the
 bottleneck and recovers the expected compute scaling (18.7 / 9.9 / 4.4 ms per
 image at 1280 / 960 / 640 px).
+
+This was then confirmed directly with CUDA graphs, which submit the whole
+network in one launch while running identical kernels:
+
+| Experiment | Eager forward | CUDA graph | Speedup |
+| ---------- | ------------: | ---------: | ------: |
+| MT-005     |      39.07 ms |    2.43 ms |  16.08x |
+| MT-006     |      39.98 ms |    4.54 ms |   8.81x |
+| MT-004     |      37.25 ms |   11.37 ms |   3.28x |
+
+Replay was verified bit-identical to eager execution on random tensors and on
+real thermal images. Resolution scaling reappears in the graphed column
+(2.43 / 4.54 / 11.37 ms, close to proportional to pixel count) where the eager
+column was flat at 37-40 ms, confirming the eager figures were measuring host
+dispatch rather than the models.
 
 The consequence is that the useful deployment optimisation is graph export, not
 a smaller model, and that companion-computer selection must be based on
@@ -339,8 +478,8 @@ and embedded deployment.
    identity-stability measurement against ground truth. The current validation
    uses a synthetic sequence and contains only one moving target, so it tests
    false positives well and false negatives barely at all.
-3. Investigate MT-005 + MT-007 ensembling to recover the 55 persons that only
-   MT-007 finds.
+3. Adopt the WBF ensemble as the thermal configuration. Its cost is resolved:
+   9.4 ms per frame under CUDA graphs, against 39 ms for one eager model.
 4. Select the companion computer using post-export measurements on candidate
    hardware.
 5. Benchmark the exported model on the selected embedded hardware.

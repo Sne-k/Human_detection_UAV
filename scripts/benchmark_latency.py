@@ -11,6 +11,8 @@ This script measures what the pipeline actually pays per frame:
   forward     pure model forward pass on a preloaded GPU tensor
   end_to_end  letterbox + forward + NMS, starting from a BGR frame in memory
   batched     the same forward at batch 8, to expose the throughput ceiling
+  cuda_graph  the forward pass replayed from a captured CUDA graph, which
+              eliminates per-kernel launch overhead entirely
 
 Disk I/O is excluded on purpose: a live pipeline receives frames from a camera,
 not from a JPEG decoder.
@@ -26,6 +28,12 @@ is finishing before the CPU can submit work, and single-frame latency is
 limited by per-layer launch overhead rather than by GPU compute. That
 distinction decides whether the right optimisation is a smaller model or a
 compiled/exported graph.
+
+The CUDA-graph measurement is the direct test of that conclusion. Capturing
+the forward pass into a graph and replaying it submits the whole network with
+one launch instead of hundreds. Replay is bit-identical to eager execution -
+it runs the same kernels in the same order - so any speedup it produces is
+pure launch overhead that a deployed, exported pipeline can also recover.
 
 Usage:
 
@@ -69,6 +77,7 @@ MODELS = [
         "modality": "Thermal",
         "imgsz": 640,
         "frame": (512, 640),
+        "graph_shape": (512, 640),
         "weights": RUNS_ROOT / "MT-005" / "weights" / "best.pt",
     },
     {
@@ -76,6 +85,7 @@ MODELS = [
         "modality": "Thermal",
         "imgsz": 960,
         "frame": (512, 640),
+        "graph_shape": (768, 960),
         "weights": RUNS_ROOT / "MT-006" / "weights" / "best.pt",
     },
     {
@@ -83,6 +93,7 @@ MODELS = [
         "modality": "Thermal",
         "imgsz": 640,
         "frame": (512, 640),
+        "graph_shape": (512, 640),
         "weights": RUNS_ROOT / "MT-007" / "weights" / "best.pt",
     },
 ]
@@ -226,6 +237,94 @@ def measure_launch_overhead(model, entry, device, half, iterations=40):
     }
 
 
+def measure_cuda_graph(model, entry, device, half, runs):
+    """
+    Capture the forward pass into a CUDA graph and replay it.
+
+    Returns (report, max_abs_diff) where the difference is measured against
+    eager execution on the same input. Replay should be bit-identical; a
+    non-zero difference means the capture is unsound and the timing must not
+    be trusted.
+    """
+
+    if device.type != "cuda":
+        return None, None
+
+    module = model.model.to(device)
+    module.eval()
+
+    if half:
+        module = module.half()
+
+    dtype = torch.float16 if half else torch.float32
+
+    shape = entry.get("graph_shape", (entry["imgsz"], entry["imgsz"]))
+
+    static_input = torch.rand(
+        1, 3, shape[0], shape[1], device=device, dtype=dtype
+    )
+
+    def raw(output):
+        return output[0] if isinstance(output, (list, tuple)) else output
+
+    try:
+        with torch.inference_mode():
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+
+            with torch.cuda.stream(side):
+                for _ in range(5):
+                    module(static_input)
+
+            torch.cuda.current_stream().wait_stream(side)
+
+            graph = torch.cuda.CUDAGraph()
+
+            with torch.cuda.graph(graph):
+                static_output = module(static_input)
+    except Exception as error:
+        print(f"  CUDA graph capture failed: {type(error).__name__}: {error}")
+        return None, None
+
+    # Correctness before speed.
+    worst = 0.0
+
+    with torch.inference_mode():
+        for _ in range(5):
+            probe = torch.rand_like(static_input)
+
+            eager = raw(module(probe)).clone()
+
+            static_input.copy_(probe)
+            graph.replay()
+
+            worst = max(
+                worst,
+                (eager - raw(static_output)).abs().max().item(),
+            )
+
+    samples = []
+
+    with torch.inference_mode():
+        for _ in range(WARMUP):
+            graph.replay()
+
+        synchronize(device)
+
+        for _ in range(runs):
+            start = time.perf_counter()
+            graph.replay()
+            synchronize(device)
+            samples.append(time.perf_counter() - start)
+
+    report = summarize(samples)
+    report["max_abs_diff_vs_eager"] = worst
+    report["bit_identical"] = worst == 0.0
+    report["shape"] = list(shape)
+
+    return report, worst
+
+
 def measure_end_to_end(model, entry, device, half, runs):
     """Letterbox + forward + NMS, from an in-memory BGR frame."""
 
@@ -284,6 +383,7 @@ def benchmark(entry, device, half, runs):
     forward = measure_forward(model, entry, device, half, runs)
     batched = measure_batched(model, entry, device, half, runs)
     launch = measure_launch_overhead(model, entry, device, half)
+    graphed, _ = measure_cuda_graph(model, entry, device, half, runs)
 
     row = {
         "experiment": entry["id"],
@@ -302,6 +402,7 @@ def benchmark(entry, device, half, runs):
         "end_to_end": end_to_end,
         "batched": batched,
         "launch": launch,
+        "cuda_graph": graphed,
     }
 
     print(
@@ -323,6 +424,15 @@ def benchmark(entry, device, half, runs):
         f"{launch['wall_ms']:.2f} ms  (ratio {launch['ratio']}) -> "
         f"{'LAUNCH-BOUND' if launch['launch_bound'] else 'compute-bound'}"
     )
+
+    if graphed:
+        print(
+            f"cudagraph  median {graphed['median_ms']:6.2f} ms  "
+            f"p95 {graphed['p95_ms']:6.2f} ms  "
+            f"{graphed['fps_median']:6.1f} FPS  "
+            f"speedup {forward['median_ms'] / graphed['median_ms']:.2f}x  "
+            f"[{'bit-identical' if graphed['bit_identical'] else 'DIVERGENT'}]"
+        )
 
     return row
 
