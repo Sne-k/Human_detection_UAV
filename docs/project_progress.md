@@ -46,11 +46,16 @@
 |    36 | Failure-mechanism verification                            | Completed   |
 |    37 | MT-005 frozen as thermal baseline                         | Completed   |
 |    38 | Three-model WBF ensemble inference pipeline               | Completed   |
-|    39 | MT-008 mosaic ablation (crowd separation)                 | In progress |
-|    40 | Candidate comparison A / B / C                            | Pending     |
-|    41 | Embedded companion-computer selection                     | Pending     |
-|    42 | Embedded model deployment/benchmarking                    | Pending     |
-|    43 | UAV payload/system integration                            | Pending     |
+|    39 | MT-008 mosaic ablation (crowd separation)                 | Completed   |
+|    40 | Model-capacity feasibility (YOLO26s latency)              | Completed   |
+|    41 | Two-model ensemble selection                              | Completed   |
+|    42 | Concept of operations decision (detect-and-report)        | Completed   |
+|    43 | False-positive composition analysis                       | Completed   |
+|    44 | MT-009 hard-negative mining                               | In progress |
+|    45 | Thermal camera selection (sensor resolution study)        | Pending     |
+|    46 | Embedded companion-computer selection                     | Pending     |
+|    47 | Embedded model deployment/benchmarking                    | Pending     |
+|    48 | UAV payload/system integration                            | Pending     |
 
 ---
 

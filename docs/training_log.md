@@ -1348,3 +1348,378 @@ suspected ones:
 
 Higher resolution and crop augmentation address none of these, which is
 precisely what MT-006 and MT-007 measured.
+
+---
+
+## 25. MT-008 - Mosaic Ablation (Crowd Separation)
+
+Section 24 established that 63% of the shared localisation failures are a
+single prediction drawn around two adjacent people. Mosaic augmentation
+composes four training images into one and downscales them, manufacturing
+dense arrangements of small objects at densities that do not occur in the
+source imagery. The hypothesis was that this teaches the detector to accept
+crowded groups as single objects.
+
+MT-008 tests that and nothing else. Every parameter was copied verbatim from
+the MT-005 run configuration; only `mosaic` changed from 1.0 to 0.0.
+`close_mosaic` was left at its MT-005 value of 10, where it is inert with
+mosaic disabled, rather than changed as a second variable.
+
+### Configuration
+
+| Parameter     | MT-005 | MT-008 |
+| ------------- | ------ | ------ |
+| Model         | YOLO26n | YOLO26n |
+| Dataset       | HIT-UAV Person | HIT-UAV Person |
+| Input size    | 640 | 640 |
+| Epochs        | 50 | 50 |
+| Batch size    | 8 | 8 |
+| **mosaic**    | **1.0** | **0.0** |
+| Training time | 1.599 h | 1.536 h |
+| Best epoch    | 47 | 47 |
+
+### Held-out test results
+
+| Metric    | MT-005 | MT-008 | Change |
+| --------- | ------ | ------ | ------ |
+| Precision | 0.897  | 0.898  | +0.001 |
+| Recall    | 0.891  | 0.876  | -0.015 |
+| mAP@50    | 0.933  | 0.923  | -0.010 |
+| mAP@50-95 | 0.510  | 0.502  | -0.008 |
+
+### The target metric
+
+| Measurement              | MT-005 | MT-008 | Change |
+| ------------------------ | -----: | -----: | -----: |
+| **Merged-box failures**  | **57** | **70** | **+13** |
+| Matched persons          |  2,425 |  2,424 |     -1 |
+| Missed persons           |    186 |    187 |     +1 |
+| Unmatched boxes          |    638 |    717 |    +79 |
+| Custom precision         | 0.7917 | 0.7717 | -0.020 |
+| Blind images             |      8 |     11 |     +3 |
+
+### Conclusion: hypothesis refuted
+
+Removing mosaic made merged-box failures **worse**, from 57 to 70. The
+mechanism it was designed to fix moved in the wrong direction, and aggregate
+precision fell as well.
+
+Mosaic is therefore not the cause of merged detections in crowded thermal
+scenes. If anything it is mildly protective, which is a plausible reading: by
+manufacturing dense arrangements it may give the detector *more* practice at
+separating adjacent objects, not less.
+
+This is a clean negative result and closes the augmentation direction.
+
+---
+
+## 26. What Has Been Ruled Out
+
+Six directions have now been tested against the MT-005 baseline. It is worth
+stating the whole set together, because the value of the remaining options can
+only be judged against what has already failed.
+
+| Direction                   | Experiment       | Outcome                                  |
+| --------------------------- | ---------------- | ---------------------------------------- |
+| Higher input resolution     | MT-006           | Recall down, mAP@50 down; merged 56 vs 57 |
+| Crop-augmented training     | MT-007           | All test metrics down, 5x training cost   |
+| Mosaic removal              | MT-008           | Merged boxes worse, 57 -> 70              |
+| Lower confidence threshold  | Diagnostic       | 15 false positives per person recovered   |
+| Global box-scale correction | Sweep            | No sizing bias exists to correct          |
+| Longer training             | Curve analysis   | All four runs flat over their last 5 epochs |
+| Larger model                | Latency measurement | YOLO26s is 1.7-2.8 FPS on the target   |
+
+### On model capacity
+
+Every experiment in this project has used YOLO26n. A larger model was proposed
+as early as the MT-003 planning and never run, so capacity was the one major
+untested variable.
+
+It is now ruled out on compute rather than accuracy. Measured through ONNX
+Runtime on CPU at 512 x 640:
+
+| Model    | Params | GFLOPs | Dev CPU | Target estimate | Verdict            |
+| -------- | ------ | ------ | ------: | --------------- | ------------------ |
+| YOLO26n  | 2.57 M |    6.2 | 39.4 ms | 5.1 - 8.5 FPS   | Meets 6.7 at 80 m+ |
+| YOLO26s  | 10.0 M |   23.1 | 117.3 ms| 1.7 - 2.8 FPS   | Too slow           |
+| YOLO26m  | 21.9 M |   75.6 | -       | -               | Far too slow       |
+
+YOLO26s costs 3x the inference time of YOLO26n and falls below even the
+detect-only requirement at the low end of the estimate. On a CPU-only
+companion computer the accuracy budget is capped by the compute budget, and
+scaling the model up is not available.
+
+It would become available with an AI accelerator, which is the main technical
+argument for buying one.
+
+---
+
+## 27. Two-Model Ensembling - the Configuration That Works
+
+With single-model improvements exhausted, the remaining lever is combining
+models that fail on different people. Section 22 measured a three-model
+ensemble; MT-008 now provides a fourth candidate, and the pairwise
+combinations are cheaper.
+
+### Complementarity
+
+Union coverage of the 2,611 test persons (oracle upper bound):
+
+| Combination             | Matched | Recall | Gain over MT-005 | Compute |
+| ----------------------- | ------: | ------ | ---------------: | ------- |
+| MT-005 alone            |   2,425 | 0.9288 |               -  | 1x      |
+| MT-005 + MT-006         |   2,481 | 0.9502 |              +56 | 2x      |
+| MT-005 + MT-008         |   2,480 | 0.9498 |              +55 | 2x      |
+| MT-005 + MT-007         |   2,480 | 0.9498 |              +55 | 2x      |
+| MT-005 + MT-006 + MT-007|   2,509 | 0.9609 |              +84 | 3x      |
+| All four                |   2,520 | 0.9651 |              +95 | 4x      |
+
+The second model contributes most of the available gain. Going from two models
+to three adds 28 more people for another 50% compute, and the fourth adds 11.
+
+### Measured fusion, not the bound
+
+Weighted box fusion at confidence 0.25, scored with the same person-level
+matching used throughout:
+
+| Configuration        | Predicted | Matched | Missed | Unmatched | Recall | Precision | Blind |
+| -------------------- | --------: | ------: | -----: | --------: | ------ | --------- | ----: |
+| MT-005 alone         |     3,063 |   2,425 |    186 |       638 | 0.9288 | 0.7917    |     8 |
+| **MT-005 + MT-006**  | **3,073** | **2,456** |**155** | **617** | **0.9406** | **0.7992** | **5** |
+| MT-005 + MT-008      |     3,099 |   2,455 |    156 |       644 | 0.9403 | 0.7922    |     5 |
+| Three-model          |     3,198 |   2,476 |    135 |       722 | 0.9483 | 0.7742    |     4 |
+
+### The important result
+
+**MT-005 + MT-006 is better than MT-005 alone on every measured axis at once.**
+
+- 31 more people found
+- 31 fewer missed
+- **21 fewer** unmatched boxes, not more
+- Higher custom precision, 0.7992 against 0.7917
+- Blind images down from 8 to 5
+
+That is not the usual recall-for-precision trade. The three-model ensemble
+bought recall by accepting 84 extra false positives and 1.75 points of
+precision; this pair improves both simultaneously.
+
+The reason is visible in section 24's mechanism analysis. Most shared failures
+are near-miss boxes between IoU 0.25 and 0.50. Averaging two independent
+near-misses moves the fused box across the threshold, which converts a miss
+into a match *and* removes what would otherwise have been counted as an
+unmatched box. Both columns improve from the same effect.
+
+### Cost, and which pair to choose
+
+| Configuration   | Dev CPU | Target estimate | Tracking (6.7) | Detect-only (1.34) |
+| --------------- | ------: | --------------- | -------------- | ------------------ |
+| MT-005 alone    | 37.1 ms | 5.4 - 9.0 FPS   | Marginal at 60 m, clears 80 m+ | Yes |
+| MT-005 + MT-008 | ~74 ms  | 2.7 - 4.5 FPS   | No, clears 4.0 at 100 m top-end | Yes |
+| MT-005 + MT-006 | ~114 ms | 1.7 - 2.9 FPS   | No             | Yes                |
+
+MT-006 runs at 960 px, so the better-performing pair is also the more
+expensive one. MT-005 + MT-008 pairs two 640 px models for almost the same
+recall (2,455 against 2,456) at two-thirds of the fusion cost, but it does not
+reproduce the precision gain - its unmatched count rises to 644.
+
+The choice therefore depends on which requirement binds:
+
+- **Movement classification required at 60 m:** MT-005 alone is the only
+  configuration that fits.
+- **Flying at 100 m with movement classification:** MT-005 + MT-008 is
+  marginal at the optimistic end of the estimate.
+- **Detect-and-report without movement state:** MT-005 + MT-006 fits
+  comfortably and is the most accurate configuration available.
+
+This is the first configuration in the project that improves on the frozen
+baseline without a compensating regression. It should be the reported result,
+with its compute cost stated alongside.
+
+---
+
+## 28. Concept of Operations - Detect-and-Report First
+
+The two-model ensemble in section 27 is the most accurate configuration
+measured, but at 2x inference it cannot sustain the 6.7 FPS that movement
+classification needs at 60 m. That forces a choice, and for a search-and-rescue
+payload the choice is not close.
+
+### Detect-and-report is the primary requirement
+
+Three reasons, in order of weight.
+
+**1. The victims who most need finding are the ones who cannot move.**
+
+A movement classifier separates moving people from stationary ones. In search
+and rescue, the highest-priority casualties are unconscious, injured, trapped
+or hypothermic - and therefore stationary. The classifier would label them
+identically to a warm rock. Thermal search exists precisely to find people who
+cannot signal for themselves, so constraining the search configuration to
+preserve a feature that fails on the most critical casualties inverts the
+mission.
+
+**2. The trade costs found people.**
+
+At 60 m with movement classification, MT-005 alone is the only configuration
+that fits the frame budget. It finds 2,425 of 2,611 test persons against the
+ensemble's 2,456. Accepting 31 fewer found people in exchange for a movement
+label is a poor exchange when a missed person can die and a false alarm costs
+a rescuer a walk.
+
+**3. Movement state is a secondary attribute, not a detection.**
+
+The pipeline already withholds the movement label at frame borders rather than
+guessing, on the principle that a wrong movement label is worse than no label.
+The same principle extends further: movement state is useful context attached
+to a detection, never a precondition for reporting one.
+
+### The aircraft removes the trade anyway
+
+The frame-rate requirement is set by ground speed, and this airframe is an
+eVTOL. It can slow down or hover. From `scripts/coverage_requirements.py`:
+
+| Ground speed | Tracking requirement @ 60 m | @ 100 m |
+| ------------ | --------------------------: | ------: |
+| 20 m/s cruise |                    6.70 FPS | 4.02 FPS |
+| 12 m/s        |                    4.02 FPS | 2.41 FPS |
+| 8 m/s loiter  |                    2.68 FPS | 1.61 FPS |
+
+The two-model ensemble delivers an estimated 1.7 - 2.9 FPS. At 8 m/s and 100 m
+it clears the 1.61 FPS tracking requirement outright.
+
+### Two-phase operation
+
+```text
+   SEARCH PHASE                        INVESTIGATE PHASE
+   20 m/s cruise, 100 m                8 m/s loiter or hover
+   MT-005 + MT-006 WBF                 same ensemble
+   detect and report                   movement classification available
+        |                                      ^
+        |  person detected                     |
+        +--> geolocate (lat/lon + error) ------+
+                   |
+                   v
+        Telemetry / Ground Station
+```
+
+The search phase maximises people found per unit of ground covered. On a
+detection, the geolocated coordinate lets the aircraft return to and loiter
+over the position, where the reduced ground speed lengthens dwell time enough
+that movement classification becomes available with the same models.
+
+Nothing is given up. The mission gets maximum recall during search and the
+movement attribute where it is actually useful - over a confirmed target,
+where "is this person moving" informs triage.
+
+### Consequence
+
+**The reported configuration is MT-005 + MT-006 with weighted box fusion,
+operating detect-and-report.** Movement classification is retained as a
+loiter-phase capability rather than a search-phase constraint.
+
+---
+
+## 29. What the "False Positives" Actually Are
+
+Section 27 showed fusion improving recall and precision simultaneously, which
+is unusual. Investigating why produced the most useful single result in this
+phase.
+
+MT-005 was run over its own **training** split - never the test split, which
+would leak - and every prediction that failed to match an annotated person at
+IoU 0.50 was collected. There are 1,729 of them. Each was then classified by
+how much it overlapped the nearest real person.
+
+| What the "false positive" is                  | Count | Share |
+| --------------------------------------------- | ----: | ----- |
+| Near-miss box **on a real person**, IoU 0.25-0.50 |   877 | 50.7% |
+| Touching a real person, IoU 0-0.25            |    89 |  5.1% |
+| Genuine background firing, IoU = 0            |   763 | 44.1% |
+| **Touching a real person at all**             | **966** | **55.9%** |
+
+### The precision problem and the recall problem are one problem
+
+**Over half of the detector's "false positives" are boxes on real people that
+are simply not accurate enough to count.** A near-miss box is penalised twice
+by the evaluation: once as a missed person, and once as an unmatched
+prediction. It appears in both the recall column and the precision column as a
+separate failure, when it is one failure.
+
+This explains the section 27 result exactly. Weighted box fusion averages two
+independent near-miss boxes; the fused box crosses IoU 0.50; and that single
+correction simultaneously converts a miss into a match *and* deletes what the
+evaluation was counting as a false positive. One mechanism, both columns. The
++31 matched and -21 unmatched are the same 31 events seen from two sides.
+
+It also reframes the whole precision figure. A custom precision of 0.7917 does
+not mean the detector hallucinates people 21% of the time. It means roughly
+9% genuine background firing and roughly 12% boxes that found a person and
+localised them poorly.
+
+### Consequence for hard-negative mining
+
+Hard-negative mining addresses background firing. It can therefore reach at
+most the 44% of unmatched boxes that are genuine background, and none of the
+56% that are localisation failures on real people.
+
+That is a substantially weaker case than Lygouras et al. faced, where the
+false positives were boats in otherwise-empty water - entirely the background
+category. It does not make the experiment worthless, but it caps the available
+gain before the run starts, and the result should be read against that cap.
+
+---
+
+## 30. MT-009 - Hard-Negative Mining
+
+Applies the method from Lygouras et al. [4]: collect the regions the detector
+falsely fires on and train them explicitly as background.
+
+### Mining
+
+Negatives are mined from the **training** split only. Harvesting the model's
+mistakes on test data and training on them would leak the test set and
+invalidate every number in this document.
+
+| Stage                                      | Count |
+| ------------------------------------------ | ----: |
+| False positives found on the training split | 1,729 |
+| Rejected: a real person fell inside the crop | 1,444 |
+| **Usable negative crops**                   | **283** |
+
+The rejection rate is high and unavoidable: 95.9% of these false positives
+occur on images that already contain people, so any window around them tends
+to catch one. A 256 px crop yielded only 156 usable negatives; 128 px yields
+283 while still carrying roughly 7x the area of a typical 13 x 18 px target.
+
+A crop is discarded if any annotated person overlaps it by more than 5% of
+that person's area. Teaching a real person as background would be far worse
+than discarding a good negative.
+
+Each surviving crop is written with an empty label file, which is how YOLO
+represents a background image.
+
+### Configuration
+
+| Parameter     | MT-005 | MT-009 |
+| ------------- | ------ | ------ |
+| Model         | YOLO26n | YOLO26n |
+| Input size    | 640 | 640 |
+| Epochs        | 50 | 50 |
+| Batch size    | 8 | 8 |
+| mosaic        | 1.0 | 1.0 |
+| Training images | 2,029 | **2,312** (+283 negatives) |
+| Val / test    | unchanged | unchanged |
+
+Only the training set differs. Validation and test splits are copied byte for
+byte from HIT-UAV Person, so MT-009 is directly comparable to every other
+thermal experiment.
+
+### Expectation, stated before the result
+
+The negative ratio is 1:7 against Lygouras's 1:1, and section 29 caps the
+addressable share of unmatched boxes at 44%. A large improvement would be
+surprising. The honest prediction is a modest reduction in unmatched boxes
+with recall approximately unchanged.
+
+Recording the expectation in advance keeps the result interpretable either
+way.

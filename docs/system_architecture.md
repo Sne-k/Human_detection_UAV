@@ -101,6 +101,7 @@ Solid boxes are implemented and validated. Dashed boxes are planned.
 | Ego-motion estimate  | Implemented | LK optical flow + partial affine, RANSAC           |
 | Movement classifier  | Implemented | World-frame displacement over a sliding window     |
 | Detection output     | Implemented | Annotated video + JSONL stream                     |
+| Geo-referencing      | Implemented | Pixel detection -> ground lat/lon + error estimate  |
 | Latency benchmark    | Implemented | `scripts/benchmark_latency.py`                     |
 | Model export         | Planned     | ONNX, then TensorRT on the target                  |
 | Companion computer   | Planned     | Selection pending post-export benchmarks           |
@@ -151,6 +152,14 @@ and the measured displacement of a genuinely moving person (49-69 px).
 A partially visible person has an unreliable centroid. Such persons are still
 detected and reported; only the movement label is withheld. For a rescue
 payload, a wrong movement label is worse than no label.
+
+### Detections are reported as ground coordinates, not pixels
+
+A bounding box in pixels is not actionable for a rescue team. The payload
+converts each detection's ground-contact point into a latitude/longitude using
+the UAV's position and attitude and the camera geometry, and reports a position
+error estimate alongside it. Attitude error dominates that estimate: at 100 m,
+one degree of attitude error moves the ground fix by about 1.75 m.
 
 ### Deployment optimisation targets graph export, not model size
 
