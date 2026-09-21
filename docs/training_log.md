@@ -2212,3 +2212,100 @@ speedup would change the exchange rate, not the fact that the exchange is bad.
 
 If an ARM board is ever in hand, the test to re-run is the latency half. The
 accuracy half is already answered.
+
+---
+
+## 36. Weighted Box Fusion on One Model - Free, and It Works
+
+Section 27 established that the two-model ensemble is the only configuration
+that beats the baseline **on every axis at once**. Section 33 then ruled it out
+for deployment: it costs 2x inference, and the board has no headroom.
+
+Section 29 explains *why* it works, and that explanation never actually
+required two models. 56% of unmatched predictions are near-miss boxes on real
+people, counted twice - once as a missed person, once as a false positive.
+Fusing two near-misses yields one better-centred box, which is why precision
+and recall improve together rather than trading off.
+
+A single model also produces several slightly-offset boxes per person before
+post-processing. **NMS discards all but the highest-confidence one, and the
+highest-confidence box is not necessarily the best-localised one.** Weighted
+box fusion averages the cluster instead.
+
+So: does the ensemble's mechanism survive with one model, by changing only
+what happens after the forward pass?
+
+### The comparison
+
+`scripts/single_model_wbf.py` runs MT-005 once, keeps every raw box above
+confidence 0.25, and feeds the identical output to both post-processors. Any
+difference is attributable to fusion versus suppression and to nothing else.
+
+| Cluster IoU | Method | Matched | Missed | Unmatched | Recall | Precision |
+|------------:|--------|--------:|-------:|----------:|-------:|----------:|
+| 0.70 | NMS | 2,425 | 186 | 638 | 0.9288 | 0.7917 |
+| 0.70 | **WBF** | **2,433** | **178** | **630** | **0.9318** | **0.7943** |
+| 0.60 | NMS | 2,417 | 194 | 499 | 0.9257 | 0.8289 |
+| 0.60 | **WBF** | **2,426** | **185** | **490** | **0.9291** | **0.8320** |
+| 0.50 | NMS | 2,412 | 199 | 448 | 0.9238 | 0.8434 |
+| 0.50 | **WBF** | **2,421** | **190** | **439** | **0.9272** | **0.8465** |
+
+**NMS at 0.70 reproduces the frozen baseline exactly** - 2,425 matched, 186
+missed, 638 unmatched, recall 0.9288, precision 0.7917, every figure identical.
+That is the control, and it means the WBF column is measured on a harness
+known to be exact rather than merely plausible.
+
+WBF beats NMS at **every** threshold tested, by +8 or +9 matched and the same
+number fewer unmatched. The symmetry is not a coincidence - it is the
+double-counting of section 29 made visible. A near-miss that becomes a match
+stops being counted as a false positive in the same instant, so both columns
+move by the same amount in opposite directions.
+
+### The configuration to deploy
+
+Because WBF recovers boxes that NMS throws away, the cluster threshold can be
+tightened to shed false positives without paying the usual recall price.
+Verified independently through `evaluate_experiment.py`:
+
+| Metric | Baseline (NMS 0.70) | WBF 0.60 | Delta |
+|--------|--------------------:|---------:|-------|
+| Matched persons | 2,425 | **2,426** | **+1** |
+| Missed persons | 186 | **185** | **-1** |
+| Unmatched boxes | 638 | **490** | **-148** |
+| Blind images | 8 | 8 | 0 |
+| Recall | 0.9288 | **0.9291** | **+0.0003** |
+| Custom precision | 0.7917 | **0.8320** | **+0.0403** |
+| Small-person recall | 0.9294 | **0.9298** | **+0.0004** |
+
+**Better on every axis, and it costs nothing.** The network is unchanged, the
+exported graph is unchanged, the Raspberry Pi 5 latency is unchanged. Only the
+code after the forward pass differs, and that code costs microseconds against
+a 40 ms inference.
+
+**23% of the false positives disappear.**
+
+### Against the alternatives
+
+| Change | Matched | Unmatched | Inference cost |
+|--------|--------:|----------:|----------------|
+| Two-model WBF ensemble | +31 | -21 | **2x** |
+| **Single-model WBF at 0.60** | **+1** | **-148** | **none** |
+| INT8 quantisation | -406 | +486 | 0.85x |
+| MT-010 box-loss weighting | -3 | +8 | none |
+
+The ensemble still finds more people, and if an accelerator is ever bought it
+remains the accuracy-optimal configuration. But on the board that actually
+exists, single-model WBF sheds **seven times more false positives than the
+ensemble does**, for free.
+
+### Why this was missed for so long
+
+Eight training runs were spent on this problem, and the fix was in the
+post-processing the whole time. The reason is visible in hindsight: NMS is
+supplied by the framework, it is not a hyperparameter anyone tunes, and it
+does not appear in `args.yaml` alongside the things that look like choices.
+It was inherited rather than chosen - the same mistake section 32 identified
+in the IoU 0.50 matching criterion, in a different place.
+
+Both of the two largest free wins in this project came from re-examining a
+default that no experiment had ever touched.
