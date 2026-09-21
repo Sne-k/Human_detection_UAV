@@ -65,6 +65,7 @@ PRED_DIRS = {
     ("MT-006", "0.25"): "MT-006-test-analysis",
     ("MT-007", "0.25"): "MT-007-test-analysis",
     ("MT-007", "0.10"): "MT-007-test-conf010",
+    ("MT-008", "0.25"): "MT-008-test-analysis",
 }
 
 IOU_THRESHOLD = 0.50     # person-level matching

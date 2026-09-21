@@ -1348,3 +1348,189 @@ suspected ones:
 
 Higher resolution and crop augmentation address none of these, which is
 precisely what MT-006 and MT-007 measured.
+
+---
+
+## 25. MT-008 - Mosaic Ablation (Crowd Separation)
+
+Section 24 established that 63% of the shared localisation failures are a
+single prediction drawn around two adjacent people. Mosaic augmentation
+composes four training images into one and downscales them, manufacturing
+dense arrangements of small objects at densities that do not occur in the
+source imagery. The hypothesis was that this teaches the detector to accept
+crowded groups as single objects.
+
+MT-008 tests that and nothing else. Every parameter was copied verbatim from
+the MT-005 run configuration; only `mosaic` changed from 1.0 to 0.0.
+`close_mosaic` was left at its MT-005 value of 10, where it is inert with
+mosaic disabled, rather than changed as a second variable.
+
+### Configuration
+
+| Parameter     | MT-005 | MT-008 |
+| ------------- | ------ | ------ |
+| Model         | YOLO26n | YOLO26n |
+| Dataset       | HIT-UAV Person | HIT-UAV Person |
+| Input size    | 640 | 640 |
+| Epochs        | 50 | 50 |
+| Batch size    | 8 | 8 |
+| **mosaic**    | **1.0** | **0.0** |
+| Training time | 1.599 h | 1.536 h |
+| Best epoch    | 47 | 47 |
+
+### Held-out test results
+
+| Metric    | MT-005 | MT-008 | Change |
+| --------- | ------ | ------ | ------ |
+| Precision | 0.897  | 0.898  | +0.001 |
+| Recall    | 0.891  | 0.876  | -0.015 |
+| mAP@50    | 0.933  | 0.923  | -0.010 |
+| mAP@50-95 | 0.510  | 0.502  | -0.008 |
+
+### The target metric
+
+| Measurement              | MT-005 | MT-008 | Change |
+| ------------------------ | -----: | -----: | -----: |
+| **Merged-box failures**  | **57** | **70** | **+13** |
+| Matched persons          |  2,425 |  2,424 |     -1 |
+| Missed persons           |    186 |    187 |     +1 |
+| Unmatched boxes          |    638 |    717 |    +79 |
+| Custom precision         | 0.7917 | 0.7717 | -0.020 |
+| Blind images             |      8 |     11 |     +3 |
+
+### Conclusion: hypothesis refuted
+
+Removing mosaic made merged-box failures **worse**, from 57 to 70. The
+mechanism it was designed to fix moved in the wrong direction, and aggregate
+precision fell as well.
+
+Mosaic is therefore not the cause of merged detections in crowded thermal
+scenes. If anything it is mildly protective, which is a plausible reading: by
+manufacturing dense arrangements it may give the detector *more* practice at
+separating adjacent objects, not less.
+
+This is a clean negative result and closes the augmentation direction.
+
+---
+
+## 26. What Has Been Ruled Out
+
+Six directions have now been tested against the MT-005 baseline. It is worth
+stating the whole set together, because the value of the remaining options can
+only be judged against what has already failed.
+
+| Direction                   | Experiment       | Outcome                                  |
+| --------------------------- | ---------------- | ---------------------------------------- |
+| Higher input resolution     | MT-006           | Recall down, mAP@50 down; merged 56 vs 57 |
+| Crop-augmented training     | MT-007           | All test metrics down, 5x training cost   |
+| Mosaic removal              | MT-008           | Merged boxes worse, 57 -> 70              |
+| Lower confidence threshold  | Diagnostic       | 15 false positives per person recovered   |
+| Global box-scale correction | Sweep            | No sizing bias exists to correct          |
+| Longer training             | Curve analysis   | All four runs flat over their last 5 epochs |
+| Larger model                | Latency measurement | YOLO26s is 1.7-2.8 FPS on the target   |
+
+### On model capacity
+
+Every experiment in this project has used YOLO26n. A larger model was proposed
+as early as the MT-003 planning and never run, so capacity was the one major
+untested variable.
+
+It is now ruled out on compute rather than accuracy. Measured through ONNX
+Runtime on CPU at 512 x 640:
+
+| Model    | Params | GFLOPs | Dev CPU | Target estimate | Verdict            |
+| -------- | ------ | ------ | ------: | --------------- | ------------------ |
+| YOLO26n  | 2.57 M |    6.2 | 39.4 ms | 5.1 - 8.5 FPS   | Meets 6.7 at 80 m+ |
+| YOLO26s  | 10.0 M |   23.1 | 117.3 ms| 1.7 - 2.8 FPS   | Too slow           |
+| YOLO26m  | 21.9 M |   75.6 | -       | -               | Far too slow       |
+
+YOLO26s costs 3x the inference time of YOLO26n and falls below even the
+detect-only requirement at the low end of the estimate. On a CPU-only
+companion computer the accuracy budget is capped by the compute budget, and
+scaling the model up is not available.
+
+It would become available with an AI accelerator, which is the main technical
+argument for buying one.
+
+---
+
+## 27. Two-Model Ensembling - the Configuration That Works
+
+With single-model improvements exhausted, the remaining lever is combining
+models that fail on different people. Section 22 measured a three-model
+ensemble; MT-008 now provides a fourth candidate, and the pairwise
+combinations are cheaper.
+
+### Complementarity
+
+Union coverage of the 2,611 test persons (oracle upper bound):
+
+| Combination             | Matched | Recall | Gain over MT-005 | Compute |
+| ----------------------- | ------: | ------ | ---------------: | ------- |
+| MT-005 alone            |   2,425 | 0.9288 |               -  | 1x      |
+| MT-005 + MT-006         |   2,481 | 0.9502 |              +56 | 2x      |
+| MT-005 + MT-008         |   2,480 | 0.9498 |              +55 | 2x      |
+| MT-005 + MT-007         |   2,480 | 0.9498 |              +55 | 2x      |
+| MT-005 + MT-006 + MT-007|   2,509 | 0.9609 |              +84 | 3x      |
+| All four                |   2,520 | 0.9651 |              +95 | 4x      |
+
+The second model contributes most of the available gain. Going from two models
+to three adds 28 more people for another 50% compute, and the fourth adds 11.
+
+### Measured fusion, not the bound
+
+Weighted box fusion at confidence 0.25, scored with the same person-level
+matching used throughout:
+
+| Configuration        | Predicted | Matched | Missed | Unmatched | Recall | Precision | Blind |
+| -------------------- | --------: | ------: | -----: | --------: | ------ | --------- | ----: |
+| MT-005 alone         |     3,063 |   2,425 |    186 |       638 | 0.9288 | 0.7917    |     8 |
+| **MT-005 + MT-006**  | **3,073** | **2,456** |**155** | **617** | **0.9406** | **0.7992** | **5** |
+| MT-005 + MT-008      |     3,099 |   2,455 |    156 |       644 | 0.9403 | 0.7922    |     5 |
+| Three-model          |     3,198 |   2,476 |    135 |       722 | 0.9483 | 0.7742    |     4 |
+
+### The important result
+
+**MT-005 + MT-006 is better than MT-005 alone on every measured axis at once.**
+
+- 31 more people found
+- 31 fewer missed
+- **21 fewer** unmatched boxes, not more
+- Higher custom precision, 0.7992 against 0.7917
+- Blind images down from 8 to 5
+
+That is not the usual recall-for-precision trade. The three-model ensemble
+bought recall by accepting 84 extra false positives and 1.75 points of
+precision; this pair improves both simultaneously.
+
+The reason is visible in section 24's mechanism analysis. Most shared failures
+are near-miss boxes between IoU 0.25 and 0.50. Averaging two independent
+near-misses moves the fused box across the threshold, which converts a miss
+into a match *and* removes what would otherwise have been counted as an
+unmatched box. Both columns improve from the same effect.
+
+### Cost, and which pair to choose
+
+| Configuration   | Dev CPU | Target estimate | Tracking (6.7) | Detect-only (1.34) |
+| --------------- | ------: | --------------- | -------------- | ------------------ |
+| MT-005 alone    | 37.1 ms | 5.4 - 9.0 FPS   | Marginal at 60 m, clears 80 m+ | Yes |
+| MT-005 + MT-008 | ~74 ms  | 2.7 - 4.5 FPS   | No, clears 4.0 at 100 m top-end | Yes |
+| MT-005 + MT-006 | ~114 ms | 1.7 - 2.9 FPS   | No             | Yes                |
+
+MT-006 runs at 960 px, so the better-performing pair is also the more
+expensive one. MT-005 + MT-008 pairs two 640 px models for almost the same
+recall (2,455 against 2,456) at two-thirds of the fusion cost, but it does not
+reproduce the precision gain - its unmatched count rises to 644.
+
+The choice therefore depends on which requirement binds:
+
+- **Movement classification required at 60 m:** MT-005 alone is the only
+  configuration that fits.
+- **Flying at 100 m with movement classification:** MT-005 + MT-008 is
+  marginal at the optimistic end of the estimate.
+- **Detect-and-report without movement state:** MT-005 + MT-006 fits
+  comfortably and is the most accurate configuration available.
+
+This is the first configuration in the project that improves on the frozen
+baseline without a compensating regression. It should be the reported result,
+with its compute cost stated alongside.

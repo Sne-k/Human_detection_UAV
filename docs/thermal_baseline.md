@@ -216,9 +216,25 @@ in as evidence arrives.
 | --------- | ---------------------------------- | --------------------------- |
 | A         | MT-005 single model                | Frozen baseline             |
 | B         | MT-005 + MT-006 + MT-007, WBF      | Measured, see section 22    |
-| C         | MT-008 single model (mosaic = 0)   | Training                    |
+| C         | MT-008 single model (mosaic = 0)   | Completed - worse, see below |
+| D         | MT-005 + MT-006, WBF fusion        | **Best measured**            |
 
-Candidate B currently records 2,476 matched / 135 missed / 722 unmatched at
-confidence 0.25 - better recall than A, but **lower custom precision** (0.7742
-against 0.7917). It trades false positives for found people, which is the right
-direction for search and rescue but is a trade, not a free improvement.
+| Candidate | Matched | Missed | Unmatched | Precision | Blind | Compute |
+| --------- | ------: | -----: | --------: | --------- | ----: | ------- |
+| A MT-005  |   2,425 |    186 |       638 | 0.7917    |     8 | 1x      |
+| B 3-model |   2,476 |    135 |       722 | 0.7742    |     4 | 3x      |
+| C MT-008  |   2,424 |    187 |       717 | 0.7717    |    11 | 1x      |
+| **D MT-005+MT-006** | **2,456** | **155** | **617** | **0.7992** | **5** | **2x** |
+
+Candidate C is rejected: MT-008 matched one fewer person than the baseline and
+raised merged-box failures from 57 to 70, refuting the mosaic hypothesis.
+
+Candidate B improves recall but at the cost of precision (0.7742 against
+0.7917) and 84 extra unmatched boxes - a trade, not a free improvement.
+
+**Candidate D is better than the baseline on every axis at once**: 31 more
+people found, 31 fewer missed, 21 *fewer* unmatched boxes, higher precision and
+blind images down from 8 to 5. It is the only configuration measured so far
+that improves on MT-005 without a compensating regression. Its cost is 2x
+inference, which rules it out where movement classification is required at
+60 m but not for detect-and-report.
