@@ -33,14 +33,26 @@ controllability.
 Held-out HIT-UAV test split: **579 images, 2,611 person instances**, never
 used for training or model selection.
 
-| Configuration | Recall | Precision | Missed | Unmatched | Blind images |
-|---------------|--------|-----------|-------:|----------:|-------------:|
-| MT-005 (baseline) | 0.9288 | 0.7917 | 186 | 638 | 8 |
-| **MT-005 + MT-006, WBF** | **0.9406** | **0.7992** | **155** | **617** | **5** |
+| Configuration | Recall | Precision | Missed | Unmatched | Blind | Cost |
+|---------------|--------|-----------|-------:|----------:|------:|------|
+| MT-005, NMS (was baseline) | 0.9288 | 0.7917 | 186 | 638 | 8 | 1x |
+| **MT-005, WBF** | **0.9291** | **0.8320** | **185** | **490** | **8** | **1x** |
+| MT-005 + MT-006, WBF | 0.9406 | 0.7992 | 155 | 617 | 5 | 2x |
 
-The two-model fusion is the only configuration found that improves on the
-baseline **on every axis at once** - more people found, fewer missed, *fewer*
-false positives, higher precision. Its cost is 2x inference.
+**The deployed configuration fuses overlapping boxes instead of suppressing
+them, and it is free.** NMS keeps only the highest-confidence box in a
+cluster, and the highest-confidence box is not necessarily the best-localised
+one; weighted box fusion averages the cluster instead. That is better on every
+axis than the old baseline - **148 fewer false positives, 23% of them, and
++4.0 points of precision** - with the network, the exported graph and the
+Raspberry Pi 5 latency all unchanged. Verified to reproduce exactly in
+`scripts/payload.py`.
+
+The two-model ensemble still finds 31 more people and remains the
+accuracy-optimal configuration, but it costs **2x inference**, which the
+target board has no headroom for. Single-model fusion sheds seven times more
+false positives than the ensemble, for nothing. See
+[`docs/training_log.md`](docs/training_log.md) section 36.
 
 ### Against the published HIT-UAV baselines
 
@@ -208,6 +220,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `payload.py` | **Unified runtime**: detection, fusion, tracking, movement, geolocation |
 | `realtime_detect.py` | Single-model pipeline; `payload.py` reuses its components |
 | `ensemble_detect.py` | Ensemble inference with per-stage timing |
+| `single_model_wbf.py` | Fusion vs suppression on one model, the free precision gain |
 | `geolocate.py` | Pixel detections to ground coordinates |
 
 ### Dataset preparation

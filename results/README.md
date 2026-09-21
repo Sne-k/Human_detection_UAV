@@ -44,6 +44,7 @@ Training runs are written by Ultralytics under
 | `results/sensor_study/` | `sensor_resolution_study.py` |
 | `results/operating_point/` | `operating_point.py` |
 | `results/quantization/` | `quantize_int8.py` |
+| `results/single_model_wbf/` | `single_model_wbf.py` |
 | `results/experiment_queue/` | `run_experiment_queue.py` |
 | `results/hard_negatives/` | `mine_hard_negatives.py` |
 | `results/test_sequence/` | `make_test_sequence.py`, `payload.py` |
@@ -65,6 +66,12 @@ Custom error analysis and failure mechanisms:
 
 ```bash
 python scripts/evaluate_experiment.py --labels MT-005-test-analysis
+```
+
+Single-model fusion, the deployed configuration:
+
+```bash
+python scripts/single_model_wbf.py
 ```
 
 Two-model fusion:
