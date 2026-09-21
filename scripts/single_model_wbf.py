@@ -346,12 +346,192 @@ def write_labels(per_frame, out_dir):
     return labels
 
 
+CONF_SWEEP = [0.25, 0.20, 0.15, 0.10, 0.07, 0.05]
+
+# The mission cost model from operating_point.py: a missed casualty costs
+# MISS_COST times what a false positive costs. 20 is that script's stated
+# value, and under NMS it selected a 0.15 threshold.
+MISS_COST = 20.0
+
+# NMS rows at the same thresholds, from results/operating_point/. Needed to
+# show that changing the post-processing moves the optimum, not just the
+# numbers at a fixed threshold.
+NMS_SWEEP = {
+    0.25: {"missed": 186, "unmatched": 638, "matched": 2425},
+    0.20: {"missed": 170, "unmatched": 793, "matched": 2441},
+    0.15: {"missed": 157, "unmatched": 999, "matched": 2454},
+    0.10: {"missed": 143, "unmatched": 1300, "matched": 2468},
+}
+
+
+def filter_frames(frames, conf):
+    """Re-threshold cached raw boxes. No re-inference."""
+
+    filtered = []
+
+    for frame in frames:
+        keep = [i for i, s in enumerate(frame["scores"]) if s >= conf]
+
+        filtered.append({
+            **frame,
+            "boxes": [frame["boxes"][i] for i in keep],
+            "scores": [frame["scores"][i] for i in keep],
+        })
+
+    return filtered
+
+
+def sweep_confidence(frames, args):
+    """
+    Spend the precision that fusion bought, on recall.
+
+    Missing a casualty and reporting a warm rock are not symmetric costs in a
+    search mission. The operating point was set at confidence 0.25 when NMS
+    gave 0.7917 precision; fusion raises that to 0.8320 at the same threshold,
+    which means the threshold can come down before precision returns to where
+    it was considered acceptable.
+
+    The floor matters. This is only defensible while the extra boxes are
+    genuinely people - so both columns are reported at every step, and the
+    point where unmatched boxes start climbing faster than matched persons is
+    where it stops.
+    """
+
+    print()
+    print("=" * 78)
+    print("Spending the precision gain on recall")
+    print("=" * 78)
+    print("Same single inference pass, re-thresholded. WBF clustering at 0.60.")
+    print()
+
+    header = (f"{'conf':>6s} {'matched':>9s} {'missed':>8s} {'unmatched':>11s} "
+              f"{'blind':>7s} {'recall':>9s} {'precision':>11s} {'per extra':>11s}")
+    print(header)
+    print("-" * len(header))
+
+    previous = None
+    rows = []
+
+    for conf in CONF_SWEEP:
+        result, _ = score(filter_frames(frames, conf), fuse, 0.60)
+
+        cost = ""
+
+        if previous is not None:
+            gained = result["matched"] - previous["matched"]
+            added = result["unmatched"] - previous["unmatched"]
+
+            cost = f"{added / gained:.1f} FP" if gained > 0 else "  no gain"
+
+        print(f"{conf:6.2f} {result['matched']:9d} {result['missed']:8d} "
+              f"{result['unmatched']:11d} {result['blind']:7d} "
+              f"{result['recall']:9.4f} {result['precision']:11.4f} "
+              f"{cost:>11s}")
+
+        result["conf"] = conf
+        rows.append(result)
+        previous = result
+
+    print()
+    print("'per extra' is the number of additional false positives paid for")
+    print("each additional person found, relative to the row above.")
+    print()
+
+    baseline_precision = BASELINE["precision"]
+
+    affordable = [r for r in rows if r["precision"] >= baseline_precision]
+
+    if affordable:
+        best = max(affordable, key=lambda r: r["matched"])
+
+        print(f"Lowest threshold still at or above the baseline's "
+              f"{baseline_precision:.4f} precision: conf {best['conf']:.2f}")
+        print(f"  {best['matched']} matched "
+              f"({best['matched'] - BASELINE['matched']:+d} vs baseline), "
+              f"recall {best['recall']:.4f}, precision {best['precision']:.4f}")
+        print()
+        print("  That is strictly better than the deployed baseline on both")
+        print("  axes at once, at no inference cost.")
+
+    # ------------------------------------------------------------------
+    # Re-derive the operating point. It depends on post-processing, and
+    # post-processing just changed.
+    # ------------------------------------------------------------------
+
+    print()
+    print("=" * 78)
+    print(f"Mission cost, missed person = {MISS_COST:.0f} x false positive")
+    print("=" * 78)
+    print("operating_point.py selected 0.15 under NMS. The optimum is a")
+    print("property of the post-processing, so it has to be re-derived.")
+    print()
+
+    def cost(entry):
+        return entry["missed"] * MISS_COST + entry["unmatched"]
+
+    print(f"{'conf':>6s} {'NMS cost':>10s} {'WBF cost':>10s} {'saving':>9s} "
+          f"{'NMS found':>11s} {'WBF found':>11s}")
+    print("-" * 62)
+
+    for row in rows:
+        nms = NMS_SWEEP.get(row["conf"])
+
+        if not nms:
+            print(f"{row['conf']:6.2f} {'-':>10s} {cost(row):10.0f}")
+            continue
+
+        print(f"{row['conf']:6.2f} {cost(nms):10.0f} {cost(row):10.0f} "
+              f"{cost(nms) - cost(row):+9.0f} "
+              f"{nms['matched']:11d} {row['matched']:11d}")
+
+    wbf_best = min(rows, key=cost)
+    nms_best = min(NMS_SWEEP.items(), key=lambda kv: cost(kv[1]))
+
+    print()
+    print(f"NMS optimum : conf {nms_best[0]:.2f}, cost {cost(nms_best[1]):.0f}, "
+          f"{nms_best[1]['matched']} people found")
+    print(f"WBF optimum : conf {wbf_best['conf']:.2f}, cost {cost(wbf_best):.0f}, "
+          f"{wbf_best['matched']} people found")
+    print()
+
+    saving = (cost(nms_best[1]) - cost(wbf_best)) / cost(nms_best[1])
+
+    print(f"Fusion lowers the mission cost at its own optimum by "
+          f"{saving * 100:.1f}%,")
+    print(f"and finds {wbf_best['matched'] - nms_best[1]['matched']:+d} more "
+          f"people while doing it. Both at no inference cost.")
+    print()
+    print("The cost ratio is a mission decision, not a technical one. What is")
+    print("technical is that fusion beats suppression at every threshold, so")
+    print("whichever ratio is chosen, fusion is the better post-processing.")
+
+    (OUTPUT_DIR / "confidence_sweep.json").write_text(
+        json.dumps({
+            "baseline": BASELINE,
+            "miss_cost": MISS_COST,
+            "nms_reference": {str(k): v for k, v in NMS_SWEEP.items()},
+            "rows": rows,
+        }, indent=2),
+        encoding="utf-8",
+    )
+
+    print()
+    print(f"Written: {OUTPUT_DIR / 'confidence_sweep.json'}")
+
+
 def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model", default="MT-005")
     parser.add_argument("--conf", type=float, default=CONF)
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument(
+        "--sweep-conf",
+        action="store_true",
+        help="Also sweep the confidence threshold. Fusion buys precision, "
+             "and in a search mission precision headroom is worth spending "
+             "on recall.",
+    )
     parser.add_argument(
         "--write-labels",
         type=float,
@@ -373,7 +553,19 @@ def main():
     print()
 
     started = time.perf_counter()
-    frames, raw_total = collect(args.model, args.conf, args.threads)
+
+    # Collect once at the sweep floor; higher thresholds filter this in
+    # memory, so the whole study costs one inference pass.
+    floor = min(CONF_SWEEP) if args.sweep_conf else args.conf
+    raw_frames, raw_total = collect(args.model, floor, args.threads)
+
+    # The main comparison runs at the operating point; the sweep needs the
+    # unfiltered set, so both are kept.
+    if floor < args.conf:
+        frames = filter_frames(raw_frames, args.conf)
+        raw_total = sum(len(f["boxes"]) for f in frames)
+    else:
+        frames = raw_frames
 
     print(f"{len(frames)} images, {raw_total} raw boxes above {args.conf} "
           f"({raw_total / max(1, len(frames)):.1f} per image) "
@@ -518,6 +710,9 @@ def main():
     )
 
     print(f"Written: {OUTPUT_DIR / 'single_model_wbf.json'}")
+
+    if args.sweep_conf:
+        sweep_confidence(raw_frames, args)
 
     if args.write_labels is not None:
         _, per_frame = score(frames, fuse, args.write_labels)

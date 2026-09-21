@@ -2309,3 +2309,80 @@ in the IoU 0.50 matching criterion, in a different place.
 
 Both of the two largest free wins in this project came from re-examining a
 default that no experiment had ever touched.
+
+---
+
+## 37. The Operating Point Has to Be Re-derived
+
+`operating_point.py` chose the confidence threshold from mission cost rather
+than convention, scoring each threshold as
+
+    cost = (missed persons x 20) + (false positives x 1)
+
+on the grounds that a missed casualty and a wasted rescue-team callout are not
+equal, and that optimising F1 treats them as if they were. Under NMS it
+selected **0.15**.
+
+That number is a property of the post-processing, and section 36 changed the
+post-processing. So it has to be computed again.
+
+### Fusion versus suppression at every threshold
+
+One inference pass, re-thresholded in memory, WBF clustering at 0.60.
+
+| Conf | NMS cost | WBF cost | Saving | NMS found | WBF found |
+|-----:|---------:|---------:|-------:|----------:|----------:|
+| 0.25 | 4,358 | 4,190 | +168 | 2,425 | 2,426 |
+| 0.20 | 4,193 | 3,904 | +289 | 2,441 | 2,445 |
+| 0.15 | 4,139 | **3,756** | +383 | 2,454 | 2,459 |
+| 0.10 | 4,160 | **3,738** | +422 | 2,468 | **2,470** |
+| 0.07 | - | 3,793 | | | 2,478 |
+| 0.05 | - | 3,858 | | | 2,485 |
+
+| | Threshold | Cost | People found |
+|---|----------:|-----:|-------------:|
+| NMS optimum | 0.15 | 4,139 | 2,454 |
+| **WBF optimum** | **0.10** | **3,738** | **2,470** |
+
+**Fusion lowers the mission cost at its own optimum by 9.7% and finds 16 more
+people while doing it.** At no inference cost, and the optimum moves down -
+because fusion makes low-confidence boxes cheaper to accept.
+
+The cost ratio is a mission decision and 20:1 is an assumption, not a
+measurement. What is *not* a matter of opinion is that fusion beats
+suppression in the left column at **every** threshold. Whatever ratio is
+chosen, the better post-processing is the same one.
+
+### What this changes, and what it does not
+
+| Parameter | Was | Now | Why |
+|-----------|-----|-----|-----|
+| Post-processing | NMS 0.70 | **WBF 0.60** | Better on every axis. Adopted in `payload.py` |
+| Confidence | 0.25 | **0.25, unchanged** | Not a strict improvement - a mission trade |
+
+The post-processing change was adopted because nothing gets worse: more people
+found, fewer false positives, same blind images. There is no trade to decide.
+
+The threshold is different. Moving from 0.25 to 0.10 finds 44 more people and
+adds 428 false positives, and whether that is right depends on how much an
+operator's attention is worth during a live response - which is a question for
+whoever runs the mission, not for this analysis. The marginal rate is recorded
+so the decision can be made on numbers:
+
+| Step | Extra people | False positives paid per person |
+|------|-------------:|--------------------------------:|
+| 0.25 -> 0.20 | +19 | 4.9 |
+| 0.20 -> 0.15 | +14 | 9.4 |
+| 0.15 -> 0.10 | +11 | 18.4 |
+| 0.10 -> 0.07 | +8 | 26.9 |
+| 0.07 -> 0.05 | +7 | 29.3 |
+
+The knee is between 0.15 and 0.10. Below it each additional person costs more
+than twenty false alarms.
+
+**One configuration is worth singling out.** At confidence 0.20 with fusion,
+the detector finds **2,445 people against the baseline's 2,425** while still
+producing **fewer** false positives - 584 against 638 - and no additional
+blind images. That is strictly better than the deployed baseline on every
+axis simultaneously, so it needs no cost ratio to justify it. It is available
+whenever the mission decision is made.
