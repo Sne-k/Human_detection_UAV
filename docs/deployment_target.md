@@ -211,6 +211,29 @@ take to a hardware trade study - considerably less demanding than a reflex
 30 FPS target, which would oversize the board by roughly an order of magnitude
 on an airframe where weight and power are already constrained.
 
+**Corrected:** that specification is for the *detector*, and the payload is
+about 22% more expensive than the detector. Measured in `training_log.md`
+section 39, tracking, movement classification, geolocation and fusion cost
+2.1 ms per frame and ego-motion compensation a further 6.6 ms, taking the
+full pipeline from 38.8 ms to 47.5 ms on the development CPU.
+
+| Configuration | Dev CPU | Pi 5 estimate | Pi 5 FPS | 6.7 @ 60 m | 4.0 @ 100 m |
+|---------------|--------:|---------------|----------|-----------|------------|
+| Detector alone | 38.8 ms | 117 - 194 ms | 5.2 - 8.6 | marginal | clears |
+| + tracking, geoloc, fusion | 40.9 ms | 123 - 205 ms | 4.9 - 8.1 | marginal | clears |
+| **Full pipeline** | **47.5 ms** | **143 - 238 ms** | **4.2 - 7.0** | marginal | **clears by 0.2** |
+
+**The specification to shop with is therefore about 7 FPS on the whole
+payload, not on the detector** - roughly 8.5 FPS of detector throughput to
+leave room for everything else.
+
+Ego-motion compensation is 6.6 ms of that, and it exists only to serve
+movement classification, which is also the sole reason the requirement is
+6.7 FPS rather than 1.34. Dropping movement classification in the search
+phase - which section 28 of the training log already argues for on mission
+grounds - removes the cost and the requirement together, and the payload then
+clears its target fourfold.
+
 ---
 
 ## 3c. Memory Footprint

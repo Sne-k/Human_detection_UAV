@@ -311,7 +311,10 @@ datasets - are free at inference and need no gate. See
 [`docs/training_log.md`](docs/training_log.md) section 33.
 
 **The frame-rate requirement is derived, not assumed.** 6.7 FPS at 60 m,
-falling to 4.0 at 100 m - set by ground coverage, not video smoothness.
+falling to 4.0 at 100 m - set by ground coverage, not video smoothness. And it
+applies to the **payload**, not the detector: tracking, geolocation, fusion and
+ego-motion add 22% on top of inference, measured end to end. See
+[`docs/training_log.md`](docs/training_log.md) section 39.
 
 ---
 
