@@ -69,6 +69,8 @@ are trained and evaluated on unrelated datasets. See
 | [`docs/training_log.md`](docs/training_log.md)         | All training experiments, error analyses and the benchmark |
 | [`docs/realtime_pipeline.md`](docs/realtime_pipeline.md) | Runtime pipeline, movement detection, measured latency   |
 | [`docs/system_architecture.md`](docs/system_architecture.md) | Architecture and design decisions                    |
+| [`docs/thermal_baseline.md`](docs/thermal_baseline.md) | Frozen MT-005 reference for all future experiments |
+| [`docs/deployment_target.md`](docs/deployment_target.md) | Project context, target hardware, and what runs on it |
 
 ---
 
@@ -95,6 +97,10 @@ Datasets, weights and training outputs are excluded from Git (see
 | `train_pilot.py`                  | Pilot training run                            |
 | `benchmark_models.py`             | Uniform accuracy benchmark across all models  |
 | `benchmark_latency.py`            | Deployment latency, with launch-bound check   |
+| `benchmark_edge_cpu.py`           | CPU-only latency, Raspberry Pi proxy          |
+| `export_models.py`                | ONNX export with verification                 |
+| `train_mt008.py`                  | MT-008 mosaic ablation                        |
+| `evaluate_experiment.py`          | Full baseline comparison for one experiment   |
 
 ### Error analysis
 
@@ -110,6 +116,11 @@ Datasets, weights and training outputs are excluded from Git (see
 | `compare_standard_vs_tiled.py`    | Tiled-inference comparison                    |
 | `test_tiled_inference.py`         | Tiled inference implementation                |
 | `visualize_mt005_vs_mt007_errors.py` | Contact sheets of disagreements            |
+| `compare_mt005_vs_mt007_conf010.py` | Per-person comparison at any threshold      |
+| `analyze_common_failures.py`      | Characterise shared failures                  |
+| `verify_crowding_hypothesis.py`   | Diagnose the mechanism of each miss           |
+| `ensemble_thermal.py`             | File-level fusion study                       |
+| `ensemble_detect.py`              | Three-model ensemble inference pipeline       |
 
 ### Runtime
 
