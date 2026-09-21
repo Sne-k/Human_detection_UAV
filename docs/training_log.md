@@ -1918,3 +1918,111 @@ experiment in this project achieved, including the two-model ensemble's 31.
 
 The lesson is that the evaluation criterion was inherited rather than chosen,
 and it was stricter than the physics of the delivery mechanism requires.
+
+---
+
+## 33. The Compute Budget Vetoes the P2 Head
+
+Section 32 and `docs/related_work.md` ended with three techniques worth
+adopting, ranked by how well they fit the measured failure profile. That
+ranking considered accuracy and ignored cost, which is the wrong order for
+this project: the companion computer is a Raspberry Pi 5 class board and the
+deployed baseline already sits at an estimated 5.4-9.0 FPS against a binding
+6.7 FPS requirement. There is almost no headroom to spend.
+
+`scripts/architecture_budget.py` measures what each candidate costs before a
+training run is spent finding out what it gains. Each architecture is built
+from its YAML at the deployment class count, exported to ONNX at the
+deployment input shape, and timed through ONNX Runtime on CPU with four
+threads - the same harness as `benchmark_edge_cpu.py`, so the numbers line up
+with section 3 of `deployment_target.md`.
+
+Weights are random. Latency depends on the graph, not on weight values, so an
+untrained network times identically to a trained one. **The cost is knowable
+before the accuracy is**, and that is the whole point of running this first.
+
+### Measured, 512 x 640, nc = 1
+
+| Architecture | Params | GFLOPs | Dev CPU | Pi 5 estimate | Pi 5 FPS |
+|--------------|-------:|-------:|--------:|---------------|----------|
+| YOLO26n (deployed) | 2.50 M | 4.7 | 38.8 ms | 117 - 194 ms | 5.2 - 8.6 |
+| YOLO26n-p2 | 2.52 M | 6.1 | 50.2 ms | 150 - 251 ms | **4.0 - 6.6** |
+| YOLO26s | 9.95 M | 18.2 | 114.2 ms | 343 - 571 ms | 1.8 - 2.9 |
+
+### Against the derived requirements
+
+| Architecture | 6.7 FPS @ 60 m | 4.0 FPS @ 100 m | 1.34 FPS report-only |
+|--------------|----------------|-----------------|----------------------|
+| YOLO26n | marginal | clears | clears |
+| **YOLO26n-p2** | **FAILS** | marginal | clears |
+| YOLO26s | FAILS | FAILS | clears |
+
+**The P2 head fails the binding requirement outright.** Not marginally - its
+optimistic end, 6.6 FPS, still falls below the 6.7 FPS the movement classifier
+needs at 60 m. It would restrict the aircraft to 100 m and above, and even
+there it is only marginal.
+
+MT-012 is therefore **cancelled before it is run**. This is a cheaper negative
+result than the seven that preceded it: fifteen minutes of benchmarking
+instead of a 90-minute training run followed by an evaluation that could not
+have changed the answer.
+
+### GFLOPs understate the cost of a high-resolution head
+
+Worth recording separately, because it will mislead the next architecture
+decision if it is not:
+
+| Architecture | GFLOPs ratio | Measured latency ratio |
+|--------------|-------------:|-----------------------:|
+| YOLO26n-p2 | 1.30x | **1.29 - 1.50x** |
+| YOLO26s | 3.87x | 2.94 - 3.03x |
+
+The two were measured twice, once while MT-010 was training and competing for
+CPU and once after; the spread above is that variance, and it is why a clean
+re-run is worth doing before this table is quoted anywhere load-bearing.
+
+The pattern survives the noise, and the two architectures scale in opposite
+directions. YOLO26s costs **less** than its arithmetic predicts - a wider
+backbone is dense matrix work, which is exactly what SIMD and cache are good
+at. The P2 head costs **more** than its arithmetic predicts, because its extra
+branch operates on a stride-4 feature map with four times the spatial area of
+P3. That is bandwidth-bound rather than arithmetic-bound, and memory bandwidth
+is precisely where a Pi 5 is weakest relative to an x86 development machine.
+
+The practical consequence: **GFLOPs is not a safe proxy for cost on this
+target**, and it errs in the dangerous direction for exactly the kind of
+change small-object detection work keeps recommending.
+
+### What survives, and why it is the better half
+
+Removing P2 leaves the two techniques that cost nothing at inference:
+
+| Technique | Inference cost | Why it is free |
+|-----------|----------------|----------------|
+| **MT-011** two-stage aerial pretraining | **Zero** | Identical graph; only the initial weights differ |
+| **MT-013** NWD localisation loss | **Zero** | Loss is training-only; the exported graph is unchanged |
+| MT-012 P2 head | 1.3 - 1.5x | Cancelled |
+
+This is not a consolation. Section 24 measured that 56% of unmatched
+predictions are near-miss boxes on real people, and section 32 showed a
+4-pixel displacement is enough to fail IoU 0.50 on a 12 x 19 px target. NWD
+attacks that mechanism directly by replacing a similarity that collapses
+discontinuously with one that degrades smoothly - and it does so in the loss,
+where it costs nothing to deploy.
+
+The technique best matched to the measured failure is also the one that is
+free. The one that breaks the budget was the one recommended on scale grounds,
+and scale has already been ruled out three times: MT-006 at 960 px, MT-007
+with crop augmentation, and the sensor-resolution study.
+
+### The rule this establishes
+
+Any future change that touches the network - a head, a backbone, an attention
+module, a neck - goes through `architecture_budget.py` before it is trained.
+Changes that touch only training - losses, augmentation, datasets, schedules -
+are free at inference and need no gate.
+
+Every experiment from MT-005 to MT-010 happened to be the second kind, so the
+deployed cost never moved and the question never came up. It comes up now
+because the literature survey's recommendations are the first that would have
+changed it.

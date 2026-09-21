@@ -311,6 +311,47 @@ comparison.
 
 ---
 
+## 3f. The Architecture Budget Gate
+
+Everything above measures models that already exist. The complementary
+question is whether a *proposed* architecture can fit before a training run is
+spent on it, and `scripts/architecture_budget.py` answers it: build the
+candidate from its YAML at the deployment class count, export to ONNX at the
+deployment shape, time it through the same CPU harness.
+
+Weights are random, because latency depends on the graph and not on weight
+values. **The cost is knowable before the accuracy is.**
+
+| Architecture | Params | GFLOPs | Dev CPU | Pi 5 estimate | Pi 5 FPS |
+|--------------|-------:|-------:|--------:|---------------|----------|
+| YOLO26n (deployed) | 2.50 M | 4.7 | 38.8 ms | 117 - 194 ms | 5.2 - 8.6 |
+| YOLO26n-p2 | 2.52 M | 6.1 | 50.2 ms | 150 - 251 ms | 4.0 - 6.6 |
+| YOLO26s | 9.95 M | 18.2 | 114.2 ms | 343 - 571 ms | 1.8 - 2.9 |
+
+| Architecture | 6.7 FPS @ 60 m | 4.0 FPS @ 100 m | 1.34 FPS report-only |
+|--------------|----------------|-----------------|----------------------|
+| YOLO26n | marginal | clears | clears |
+| YOLO26n-p2 | **FAILS** | marginal | clears |
+| YOLO26s | FAILS | FAILS | clears |
+
+This cancelled MT-012, the P2 small-object head recommended by the literature
+survey, before it was trained - its optimistic end still falls below the
+binding requirement.
+
+**GFLOPs is not a safe proxy for cost here.** A P2 head costs 1.3-1.5x latency
+for 1.30x arithmetic because a stride-4 feature map is bandwidth-bound, and
+bandwidth is where a Pi 5 is weakest relative to x86. A wider backbone runs
+the other way: YOLO26s costs 2.9-3.0x for 3.87x arithmetic, because dense
+matrix work is what SIMD and cache handle well.
+
+The rule: **changes that touch the network go through this gate before they
+are trained; changes that touch only training - losses, augmentation,
+datasets, schedules - are free at inference and do not.** Every experiment
+from MT-005 to MT-010 was the second kind, which is why the deployed cost has
+never moved.
+
+---
+
 ## 4. Options If More Performance Is Needed
 
 | Option                       | Effect                                    | Cost |

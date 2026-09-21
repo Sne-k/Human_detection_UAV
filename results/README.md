@@ -31,7 +31,7 @@ Training runs are written by Ultralytics under
 
 | Path | Produced by |
 |------|-------------|
-| `results/benchmark/` | `benchmark_models.py`, `benchmark_latency.py`, `benchmark_edge_cpu.py` |
+| `results/benchmark/` | `benchmark_models.py`, `benchmark_latency.py`, `benchmark_edge_cpu.py`, `architecture_budget.py` |
 | `results/export/` | `export_models.py` |
 | `results/error_analysis/` | the `analyze_*` and `compare_*` scripts |
 | `results/error_analysis/ensemble/` | `ensemble_thermal.py` |

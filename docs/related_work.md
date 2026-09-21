@@ -145,37 +145,54 @@ head plus a tiny-object-aware localisation loss**. Neither has been tried here.
 
 Ranked by evidence and by fit to the measured failure profile.
 
-### A. Small-object detection head (P2)
+### A. Two-stage aerial pretraining - adopt
 
-`yolo26-p2.yaml` ships with Ultralytics, so this is a configuration change
-rather than an implementation.
+VisDrone-pretrained weights, then fine-tune on HIT-UAV. **Costs nothing at
+inference**: identical graph, identical deployed latency, only the initial
+weights differ. Published evidence from AlienSight within-modality;
+cross-modality RGB to thermal is a weaker prior, since appearance differs even
+though aerial human shape and scale transfer. Both datasets are already on
+disk. Queued as **MT-011**.
 
-| Config | Params | GFLOPs @ 640 | Heads |
-|--------|-------:|-------------:|-------|
-| YOLO26n (current) | 2.57 M | 6.2 | P3, P4, P5 |
-| **YOLO26n-p2** | **2.66 M** | **9.6** | P2, P3, P4, P5 |
-| YOLO26s (rejected on compute) | 10.0 M | 23.1 | P3, P4, P5 |
+### B. NWD localisation loss - adopt
 
-At 640 input, P3 has stride 8 and P2 stride 4. A 12 x 19 px person spans about
-1.5 x 2.4 cells at P3 but 3.0 x 4.8 at P2 - considerably more resolution
-exactly where every target in this dataset sits.
+The best-motivated technique and the most invasive to implement. Ultralytics
+does not expose it, so it requires modifying the loss function rather than
+passing a flag. It directly attacks the mechanism behind 56% of failures.
 
-Cost is 1.55x compute for +0.09 M parameters, against the 3.7x that ruled out
-YOLO26s. Estimated 3.5 - 5.8 FPS on the target: clears the 100 m requirement,
-marginal at 60 m.
+**Also free at inference.** A loss function exists only during training; the
+exported graph is unchanged and the Pi 5 cost is identical to MT-005's.
+Queued as **MT-013**.
 
-### B. Two-stage aerial pretraining
+### C. Small-object detection head (P2) - REJECTED on compute
 
-VisDrone-pretrained weights, then fine-tune on HIT-UAV. Costs nothing at
-inference. Published evidence from AlienSight within-modality; cross-modality
-RGB to thermal is a weaker prior, since appearance differs even though aerial
-human shape and scale transfer.
+This was recommended above on accuracy grounds, and on accuracy grounds it is
+the single most-supported technique in the surveyed literature: IPD-YOLO,
+YOFIR, YOLO-TSL and IFD-YOLO all include one.
 
-### C. NWD localisation loss
+It does not fit the target. Measured with `scripts/architecture_budget.py` at
+the deployment shape:
 
-The best-motivated technique and the most invasive. Ultralytics does not
-expose it, so it requires modifying the loss function rather than passing a
-flag. Directly attacks the mechanism behind 56% of failures.
+| Architecture | Params | GFLOPs | Dev CPU | Pi 5 FPS | 6.7 FPS @ 60 m |
+|--------------|-------:|-------:|--------:|----------|----------------|
+| YOLO26n (deployed) | 2.50 M | 4.7 | 38.8 ms | 5.2 - 8.6 | marginal |
+| **YOLO26n-p2** | 2.52 M | 6.1 | 50.2 ms | **4.0 - 6.6** | **FAILS** |
+
+Its optimistic end still falls below the binding requirement. It would confine
+the aircraft to 100 m and above and be marginal even there.
+
+Two things are worth carrying forward from the measurement:
+
+1. The cost is **worse than its GFLOPs predict** - 1.3-1.5x latency for 1.30x
+   arithmetic - because a stride-4 head is bandwidth-bound, and bandwidth is
+   where a Pi 5 is weakest. GFLOPs is not a safe proxy for cost on this target.
+2. It is the *only* one of the three recommendations that touches the network.
+   The other two are training-time changes and are free. The technique that
+   breaks the budget was the one recommended on **scale** grounds - and scale
+   has already been ruled out three times here.
+
+Keep P2 as a contingency if an AI accelerator is ever added. See
+`training_log.md` section 33.
 
 ### D. Alerting
 

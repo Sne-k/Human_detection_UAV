@@ -221,6 +221,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `benchmark_models.py` | Uniform accuracy benchmark across models |
 | `benchmark_latency.py` | Deployment latency with launch-bound diagnostic |
 | `benchmark_edge_cpu.py` | CPU-only latency, Raspberry Pi proxy |
+| `architecture_budget.py` | Gate: does a candidate architecture fit the target, before training it |
 | `export_models.py` | ONNX export with verification against PyTorch |
 | `coverage_requirements.py` | Derive required frame rate from the mission |
 | `sensor_resolution_study.py` | Detection vs thermal sensor resolution |
@@ -264,6 +265,15 @@ light-independent modality and the one that fits the compute budget. MT-004 at
 
 **Thermal sensor resolution is the binding purchase decision.** A 160 x 120
 module loses one person in three. **384 x 288 is the floor.**
+
+**Architecture changes are gated on compute before they are trained.** The
+literature's most-supported technique for small objects - a P2 detection head -
+was measured at 4.0-6.6 FPS on the target against a 6.7 FPS requirement and
+**cancelled before training**. GFLOPs understates it: 1.3-1.5x latency for
+1.30x arithmetic, because a stride-4 head is bandwidth-bound and bandwidth is
+where a Pi 5 is weakest. Training-time changes - losses, augmentation,
+datasets - are free at inference and need no gate. See
+[`docs/training_log.md`](docs/training_log.md) section 33.
 
 **The frame-rate requirement is derived, not assumed.** 6.7 FPS at 60 m,
 falling to 4.0 at 100 m - set by ground coverage, not video smoothness.
