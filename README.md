@@ -70,24 +70,32 @@ four classes. See [`docs/related_work.md`](docs/related_work.md).
 
 ### The evaluation criterion was stricter than the mission needs
 
-| Criterion | Box error rejected | People found | Recall |
-|-----------|-------------------:|-------------:|--------|
-| IoU 0.50 (CV convention) | 0.58 m | 2,425 | 0.9288 |
-| **IoU 0.25 (mission-derived)** | **1.05 m** | **2,511** | **0.9617** |
+| Criterion | Box error rejected | People found | Unmatched | Recall |
+|-----------|-------------------:|-------------:|----------:|--------|
+| IoU 0.50 (CV convention) | 0.58 m | 2,426 | 490 | 0.9291 |
+| **IoU 0.25 (mission-derived)** | **1.05 m** | **2,501** | **415** | **0.9579** |
 
 Each fix is reported with a **+/- 3.8 m** position uncertainty, which is 3.6x
 larger than the box error IoU 0.25 still accepts - so a detection rejected for
 landing between 0.25 and 0.50 would have sent the rescue team to the same
-place. **86 more people, no model change.** mAP@50 is still reported as the
+place. **75 more people, no model change.** mAP@50 is still reported as the
 comparable metric; see [`docs/training_log.md`](docs/training_log.md)
 section 32 for how to state both honestly.
+
+Under the old NMS post-processing this gain was 86 people rather than 75. It
+shrank because fusion and the loosened criterion recover *the same* near-miss
+boxes, so fixing them in post-processing leaves fewer for the criterion to
+forgive - which is what should happen if both explanations are right.
 
 ### It works better in the dark
 
 | Condition | Images | Recall | Precision |
 |-----------|-------:|--------|-----------|
-| **Night** | 396 | **0.9422** | **0.8234** |
-| Day | 183 | 0.8786 | 0.6860 |
+| **Night** | 396 | **0.9432** | **0.8631** |
+| Day | 183 | 0.8768 | 0.7267 |
+
+Measured in the deployed fusion configuration. Fusion adds about 4 points of
+precision in *both* conditions and leaves the conclusion unchanged.
 
 Thermal sensing does not use visible light, so darkness is the detector's
 *best* condition. Sun-heated roads and rooftops reach body temperature in

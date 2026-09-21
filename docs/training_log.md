@@ -2386,3 +2386,47 @@ producing **fewer** false positives - 584 against 638 - and no additional
 blind images. That is strictly better than the deployed baseline on every
 axis simultaneously, so it needs no cost ratio to justify it. It is available
 whenever the mission decision is made.
+
+---
+
+## 38. Re-measuring the Headline Claims Under Fusion
+
+Sections 36 and 37 changed the deployed post-processing. Two figures quoted
+elsewhere in this project were measured under the old one, so both were
+recomputed rather than left to drift.
+
+### All-conditions performance
+
+| Condition | Images | NMS recall | WBF recall | NMS precision | WBF precision |
+|-----------|-------:|-----------:|-----------:|--------------:|--------------:|
+| Night | 396 | 0.9422 | **0.9432** | 0.8234 | **0.8631** |
+| Day | 183 | 0.8786 | 0.8768 | 0.6860 | **0.7267** |
+
+The conclusion is unchanged - **thermal sensing is better in darkness, and
+noon is the hard case** - and fusion adds about 4 points of precision in both
+conditions. Day recall falls by one person, which is one person out of 552 and
+below anything that should be read as a trend.
+
+### The operational criterion, and an honest shrinkage
+
+| Post-processing | IoU 0.50 | IoU 0.25 | Gain | Unmatched at 0.25 |
+|-----------------|---------:|---------:|-----:|------------------:|
+| NMS | 2,425 | 2,511 | **+86** | 552 |
+| WBF | 2,426 | 2,501 | **+75** | **415** |
+
+Section 32's headline gain drops from 86 people to 75. That is worth stating
+plainly rather than quietly keeping the larger number.
+
+**It shrank for the reason it should have.** Both mechanisms recover the same
+population: near-miss boxes that sit on a real person but fall below IoU 0.50.
+Fusion fixes some of them in post-processing, so fewer remain for a loosened
+criterion to forgive. If the two effects had been independent, the gain would
+have stayed at 86 - the fact that it did not is evidence that section 29's
+account of the failure mode is correct.
+
+At the operational criterion the two configurations are close on people found,
+2,501 against 2,511, and fusion is well ahead on false positives, 415 against
+552. Fusion trades ten people at the loose criterion for 137 fewer false
+alarms, while being ahead at the strict criterion. It remains the better
+configuration, but this particular comparison is a trade rather than the clean
+sweep that sections 36 and 37 describe, and it should not be reported as one.
