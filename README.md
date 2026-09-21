@@ -133,7 +133,8 @@ Datasets, weights and training outputs are excluded from Git (see
 
 | Script                            | Purpose                                      |
 | --------------------------------- | -------------------------------------------- |
-| `realtime_detect.py`              | Detection + tracking + movement pipeline      |
+| `payload.py`                      | **Unified runtime: ensemble + tracking + movement + geolocation** |
+| `realtime_detect.py`              | Single-model pipeline (payload.py reuses its components) |
 | `make_test_sequence.py`           | Synthesise a validation sequence with truth   |
 | `geolocate.py`                    | Pixel detections to ground coordinates        |
 
@@ -141,10 +142,16 @@ Datasets, weights and training outputs are excluded from Git (see
 
 ## Usage
 
-Run the thermal detector on a video with movement classification:
+Run the payload on a video. Single model:
 
 ```bash
-python scripts/realtime_detect.py --source flight.mp4 --model MT-005 --save-video out.mp4 --jsonl detections.jsonl
+python scripts/payload.py --source flight.mp4 --model MT-005 --jsonl detections.jsonl
+```
+
+The best-measured configuration, with geolocated output:
+
+```bash
+python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemetry state.jsonl --jsonl detections.jsonl
 ```
 
 Benchmark accuracy across all reference models (one model per invocation):
