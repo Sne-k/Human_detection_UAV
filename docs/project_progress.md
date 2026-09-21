@@ -36,9 +36,9 @@
 |    26 | MT-007 thermal crop-augmented training @ 640 px           | Completed   |
 |    27 | MT-007 evaluation and per-person MT-005 comparison        | Completed   |
 |    28 | Unified RGB/thermal model benchmark                       | Completed   |
-|    29 | Deployment latency benchmark                              | Pending     |
-|    30 | Movement detection/tracking                               | Pending     |
-|    31 | Real-time inference pipeline                              | Pending     |
+|    29 | Deployment latency benchmark                              | Completed   |
+|    30 | Movement detection/tracking                               | Completed   |
+|    31 | Real-time inference pipeline                              | Completed   |
 |    32 | Model export for embedded inference (ONNX)                | Pending     |
 |    33 | RGB/thermal model ensembling investigation                | Pending     |
 |    34 | Embedded companion-computer selection                     | Pending     |
@@ -273,6 +273,47 @@ Selected models:
 | Thermal reference    | MT-005 |
 | Thermal localization | MT-006 |
 
+### Real-Time Pipeline
+
+A runtime pipeline was implemented that runs detection, ByteTrack identity
+tracking and movement classification over a video, image sequence or camera
+stream, and emits an annotated video plus a JSONL detection stream.
+
+Movement is measured in a stabilised world frame. The pipeline estimates the
+camera motion caused by the aircraft each frame using optical flow and a
+partial affine fit, accumulates it, and converts track positions into world
+coordinates. This matters because on a moving aircraft the apparent motion of a
+stationary person is usually larger than the real motion of a walking person.
+
+Validated on a synthesised sequence with known ground truth (a viewport panning
+across a HIT-UAV thermal image containing 31 stationary persons, plus one
+composited person that genuinely moves):
+
+| Configuration               | Tracks | Flagged moving | False positives |
+| --------------------------- | -----: | -------------: | --------------: |
+| Ego-motion compensation on  |     43 |              1 |               0 |
+| Ego-motion compensation off |     43 |              7 |               6 |
+
+With compensation the single flagged track matched the composited person's
+known trajectory across all 120 frames.
+
+### Latency Benchmark
+
+A deployment latency benchmark replaced the validator throughput figures, which
+include dataloader overhead and cannot be used for hardware sizing.
+
+The measurement found that all four models are **launch-bound** at batch 1 on
+the development GPU: the CPU takes as long to enqueue kernels as the entire
+frame takes, so 1280 px costs the same as 640 px. Batch 8 removes the
+bottleneck and recovers the expected compute scaling (18.7 / 9.9 / 4.4 ms per
+image at 1280 / 960 / 640 px).
+
+The consequence is that the useful deployment optimisation is graph export, not
+a smaller model, and that companion-computer selection must be based on
+post-export measurements on the target hardware.
+
+Details in [`realtime_pipeline.md`](realtime_pipeline.md).
+
 ---
 
 ## Current Work
@@ -282,30 +323,26 @@ the thermal detector. Two independent scale experiments (MT-006, MT-007) both
 failed to improve on MT-005, and the remaining failures are not explained by
 target size.
 
-Work therefore moves to system integration:
-
-1. Deployment latency benchmark, to replace the validator throughput figures
-   with numbers that are usable for companion-computer selection.
-2. Temporal tracking and movement detection on video.
-3. A real-time inference pipeline.
-4. Model export for embedded inference.
+Work has therefore moved to system integration. The latency benchmark,
+tracking, movement detection and the real-time pipeline are complete and
+documented. The remaining work is model export, validation on real UAV video,
+and embedded deployment.
 
 ---
 
 ## Next Planned Steps
 
-1. Measure real single-frame inference latency for MT-004, MT-005 and MT-006
-   with warm-up, separate from dataloader overhead.
-2. Add multi-object tracking so that a detected person keeps an identity across
-   frames.
-3. Derive movement detection from track histories, with UAV ego-motion taken
-   into account.
-4. Build the real-time inference pipeline that runs detection + tracking on a
-   video or camera stream and emits structured detection output.
-5. Export the selected models to ONNX and verify numerical agreement with the
-   PyTorch models.
-6. Investigate MT-005 + MT-007 ensembling to recover the 55 persons that only
+1. Export MT-004 and MT-005 to ONNX, verify numerical agreement with the
+   PyTorch models, and re-measure latency to quantify the gain predicted by the
+   launch-bound analysis.
+2. Validate tracking and movement detection on real UAV video, including
+   identity-stability measurement against ground truth. The current validation
+   uses a synthetic sequence and contains only one moving target, so it tests
+   false positives well and false negatives barely at all.
+3. Investigate MT-005 + MT-007 ensembling to recover the 55 persons that only
    MT-007 finds.
-7. Select the companion computer using the measured latency and export results.
-8. Benchmark the exported model on the selected embedded hardware.
-9. Integrate the human-detection payload with the UAV system.
+4. Select the companion computer using post-export measurements on candidate
+   hardware.
+5. Benchmark the exported model on the selected embedded hardware.
+6. Add the ground-station interface that consumes the JSONL detection stream.
+7. Integrate the human-detection payload with the UAV system.

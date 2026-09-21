@@ -37,3 +37,9 @@ Thumbs.db
 dataset/hit_uav_person/
 results/error_analysis/
 results/hit_uav_dataset_check/
+
+# Generated benchmark and runtime outputs
+results/benchmark/
+results/test_sequence/
+results/mt007_crop_check/
+dataset/hit_uav_person_crops/

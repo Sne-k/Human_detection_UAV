@@ -57,15 +57,30 @@ MODELS = {
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 
-# Movement classification
-HISTORY_FRAMES = 15          # positions kept per track
-MOVEMENT_THRESHOLD_PX = 6.0  # stabilised displacement to call a track moving
-MIN_HISTORY_FOR_STATE = 5    # frames needed before a state is reported
+# Movement classification.
+#
+# The threshold is set from the measured noise floor rather than guessed. On
+# the synthetic pan sequence (see scripts/make_test_sequence.py), stationary
+# persons under a compensated camera drift by at most ~10 px over a 15-frame
+# window, driven by box jitter on targets only ~12 x 19 px in size, while the
+# genuinely moving person reaches 49-69 px. 15 px sits in that gap with margin
+# on both sides.
+HISTORY_FRAMES = 15           # positions kept per track
+MOVEMENT_THRESHOLD_PX = 15.0  # stabilised displacement to call a track moving
+MIN_HISTORY_FOR_STATE = 5     # frames needed before a state is reported
+
+# A box touching the frame edge is only partly inside the field of view, so its
+# centroid shifts as the person enters or leaves rather than as they move.
+# Such tracks are still detected and reported; only their movement state is
+# withheld, because for a rescue payload a wrong movement label is worse than
+# no label.
+BORDER_MARGIN_PX = 8
 
 # Colours (BGR)
 COLOR_MOVING = (0, 0, 255)
 COLOR_STATIC = (0, 200, 0)
 COLOR_UNKNOWN = (0, 200, 200)
+COLOR_EDGE = (160, 160, 160)
 COLOR_TEXT = (255, 255, 255)
 
 
@@ -196,11 +211,12 @@ class MovementTracker:
     ):
         self.history = {}
         self.last_seen = {}
+        self.border_tracks = set()
         self.history_frames = history_frames
         self.threshold_px = threshold_px
         self.min_history = min_history
 
-    def update(self, track_id, world_point, frame_index):
+    def update(self, track_id, world_point, frame_index, at_border=False):
         positions = self.history.setdefault(
             track_id,
             deque(maxlen=self.history_frames),
@@ -209,6 +225,9 @@ class MovementTracker:
         positions.append(world_point)
         self.last_seen[track_id] = frame_index
 
+        if at_border:
+            self.border_tracks.add(track_id)
+
     def state(self, track_id):
         """Return (state, displacement_px) for a track."""
 
@@ -216,6 +235,9 @@ class MovementTracker:
 
         if positions is None or len(positions) < self.min_history:
             return "unknown", 0.0
+
+        if track_id in self.border_tracks:
+            return "edge", 0.0
 
         first = np.array(positions[0])
         last = np.array(positions[-1])
@@ -239,6 +261,7 @@ class MovementTracker:
         for track_id in stale:
             self.history.pop(track_id, None)
             self.last_seen.pop(track_id, None)
+            self.border_tracks.discard(track_id)
 
 
 # ---------------------------------------------------------------------
@@ -319,6 +342,8 @@ def annotate(frame, records, stats):
             color = COLOR_MOVING
         elif record["state"] == "stationary":
             color = COLOR_STATIC
+        elif record["state"] == "edge":
+            color = COLOR_EDGE
         else:
             color = COLOR_UNKNOWN
 
@@ -471,8 +496,15 @@ def run(args):
                 else:
                     world = centre
 
+                at_border = (
+                    x1 <= args.border_margin
+                    or y1 <= args.border_margin
+                    or x2 >= frame.shape[1] - args.border_margin
+                    or y2 >= frame.shape[0] - args.border_margin
+                )
+
                 if track_id >= 0:
-                    movement.update(track_id, world, frame_index)
+                    movement.update(track_id, world, frame_index, at_border)
                     state, displacement = movement.state(track_id)
 
                     seen_tracks.add(int(track_id))
@@ -630,6 +662,12 @@ def main():
         type=float,
         default=MOVEMENT_THRESHOLD_PX,
         help="Stabilised displacement in pixels to classify a track as moving",
+    )
+    parser.add_argument(
+        "--border-margin",
+        type=int,
+        default=BORDER_MARGIN_PX,
+        help="Withhold the movement state for boxes this close to the frame edge",
     )
     parser.add_argument(
         "--no-ego-motion",
