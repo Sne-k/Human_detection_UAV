@@ -38,7 +38,10 @@ Usage:
 
 import argparse
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ultralytics import YOLO
 
@@ -115,6 +118,38 @@ def main():
         default=None,
         help="Distribution focal loss weight. MT-005 used 1.5.",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Starting weights, or an architecture YAML. MT-005 used "
+             "yolo26n.pt. MT-011 passes MT-004's VisDrone weights; MT-012 "
+             "passes yolo26n-p2.yaml.",
+    )
+    parser.add_argument(
+        "--transfer",
+        default=None,
+        help="Weights to transfer into an architecture given by --model. "
+             "Layers whose shapes match are copied, the rest stay random. "
+             "Without this, a YAML trains from scratch, which would confound "
+             "an architecture change with the loss of COCO pretraining.",
+    )
+    parser.add_argument(
+        "--nwd",
+        type=float,
+        default=None,
+        metavar="RATIO",
+        help="Blend Normalized Wasserstein Distance into the localisation "
+             "loss: similarity = (1-RATIO)*CIoU + RATIO*NWD. 0.5 is the "
+             "usual choice. Training-time only; the exported graph and the "
+             "deployed latency are unchanged.",
+    )
+    parser.add_argument(
+        "--nwd-constant",
+        type=float,
+        default=None,
+        help="NWD distance scale in image pixels. Defaults to the measured "
+             "mean object size of the HIT-UAV train split.",
+    )
     parser.add_argument("--resume", action="store_true")
 
     args = parser.parse_args()
@@ -126,6 +161,9 @@ def main():
 
     config = dict(MT005_CONFIG)
     config["mosaic"] = args.mosaic
+
+    if args.model is not None:
+        config["model"] = args.model
 
     if args.box is not None:
         config["box"] = args.box
@@ -146,12 +184,36 @@ def main():
     if args.dfl is not None:
         print(f"dfl:     {args.dfl}  (MT-005 baseline used 1.5)")
 
+    if args.model is not None:
+        print(f"model:   {args.model}  (MT-005 baseline used yolo26n.pt)")
+
+    if args.transfer is not None:
+        print(f"transfer:{args.transfer}  -> into the architecture above")
+
+    if args.nwd is not None:
+        print(f"nwd:     {args.nwd}  (MT-005 used pure CIoU)")
+
     print("All other parameters are identical to MT-005.")
     print("=" * 62)
+
+    if args.nwd is not None:
+        import nwd_loss
+
+        nwd_loss.enable(
+            ratio=args.nwd,
+            constant=args.nwd_constant or nwd_loss.DEFAULT_CONSTANT,
+        )
 
     weights = config.pop("model")
 
     model = YOLO(weights)
+
+    if args.transfer is not None:
+        # Copy every layer whose shape matches. For a P2 architecture this
+        # keeps the COCO-pretrained backbone and neck and leaves only the new
+        # stride-4 head random, so the run tests the head rather than the
+        # absence of pretraining.
+        model = model.load(args.transfer)
 
     model.train(
         data=str(data),

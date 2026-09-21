@@ -2026,3 +2026,79 @@ Every experiment from MT-005 to MT-010 happened to be the second kind, so the
 deployed cost never moved and the question never came up. It comes up now
 because the literature survey's recommendations are the first that would have
 changed it.
+
+---
+
+## 34. MT-010 - Box-Loss Weighting Rejected
+
+The failure-mechanism analysis found that 29% of localisation failures were
+**undersized** boxes - a prediction correctly centred on a person but drawn too
+small to reach IoU 0.50. MT-010 tested the obvious response: double the
+box-regression loss weight so the optimiser cares more about getting the
+extents right.
+
+    MT-005   box = 7.5   (Ultralytics default)
+    MT-010   box = 15.0  (this run)
+
+Everything else is copied from MT-005, so the result is attributable to the
+loss weight alone.
+
+### Result: worse on every axis
+
+Held-out test split, confidence 0.25, IoU >= 0.50.
+
+| Metric | MT-005 baseline | MT-010 | Delta |
+|--------|----------------:|-------:|-------|
+| Matched persons | 2,425 | 2,422 | **-3** |
+| Missed persons | 186 | 189 | +3 |
+| Unmatched boxes | 638 | 646 | +8 |
+| **Blind images** | **8** | **18** | **+10** |
+| Recall | 0.9288 | 0.9276 | -0.0012 |
+| Custom precision | 0.7917 | 0.7894 | -0.0023 |
+| Small-person recall | 0.9294 | 0.9282 | -0.0012 |
+| mAP@50 | 0.9330 | 0.9246 | **-0.0084** |
+
+Under the mission-derived IoU 0.25 criterion it is worse there too: 2,494
+matched against the baseline's 2,511.
+
+**MT-010 is rejected.** That is the eighth direction tested and the eighth
+rejected.
+
+### But the hypothesis was not wrong
+
+This is the interesting part, and it would be lost by recording only the
+headline. The mechanism it targeted did move:
+
+| Mechanism | MT-005 | MT-010 | Change |
+|-----------|-------:|-------:|--------|
+| merged | 57 | 49 | **-8** |
+| undersized | - | 30 | - |
+| offset | - | 10 | - |
+| stolen | - | 15 | - |
+| no_overlap | - | 85 | - |
+
+Weighting box regression more heavily **did** reduce merged boxes, by 8. The
+run still lost overall because the cost landed somewhere the hypothesis never
+considered: **blind images more than doubled, from 8 to 18**. An image where a
+person is present and nothing at all is reported is the worst failure this
+payload has, and MT-010 produced ten more of them.
+
+The mechanism is a budget. Total loss is a weighted sum, so doubling the box
+term halves the relative weight of the classification term. The detector
+became better at drawing boxes and worse at deciding there was something
+there, and for a search payload that is the wrong trade at any exchange rate.
+
+### What this adds to the picture
+
+Seven previous rejections all attacked target **scale** and produced no
+movement in any mechanism. MT-010 is the first that moved its target and still
+lost. That distinction matters for what to try next:
+
+- Scale-directed changes do not work because scale is not the problem.
+- Loss-*weighting* changes cannot win because they only move weight between
+  terms that are all still needed.
+
+What has never been tried is changing the *shape* of the localisation loss
+rather than its weight - keeping the classification term untouched and making
+the box term informative where it currently is not. That is exactly what NWD
+does, and it is why MT-013 is the next run rather than another weight sweep.
