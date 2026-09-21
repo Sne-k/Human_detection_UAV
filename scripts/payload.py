@@ -130,22 +130,31 @@ class Detector:
     single model and an ensemble are interchangeable downstream.
     """
 
-    def __init__(self, names, device, conf=CONF, fuse_iou=FUSE_IOU):
+    def __init__(self, names, device, conf=CONF, fuse_iou=FUSE_IOU,
+                 explicit_weights=None, shape_override=None, classes=None):
         from ultralytics import YOLO
 
         self.conf = conf
         self.fuse_iou = fuse_iou
         self.device = device
+        self.classes = classes
         self.names = list(names)
         self.models = []
 
         for name in self.names:
-            weights = RUNS_ROOT / name / "weights" / "best.pt"
+            if explicit_weights:
+                weights = Path(explicit_weights)
 
-            if not weights.exists():
-                raise SystemExit(f"Weights not found: {weights}")
+                if not weights.exists():
+                    # Ultralytics resolves bare model names by downloading.
+                    weights = Path(explicit_weights)
+            else:
+                weights = RUNS_ROOT / name / "weights" / "best.pt"
 
-            shape = MODEL_SHAPES.get(name, (512, 640))
+                if not weights.exists():
+                    raise SystemExit(f"Weights not found: {weights}")
+
+            shape = shape_override or MODEL_SHAPES.get(name, (512, 640))
 
             model = YOLO(str(weights))
             model.model.to(device).eval()
@@ -178,6 +187,7 @@ class Detector:
                 conf=self.conf,
                 iou=NMS_IOU,
                 device=self.device,
+                classes=self.classes,
                 verbose=False,
             )[0]
 
@@ -375,6 +385,31 @@ def main():
         default=None,
         help="Two or more models to fuse, e.g. MT-005 MT-006",
     )
+    group.add_argument(
+        "--weights",
+        default=None,
+        help=(
+            "Arbitrary weights path, e.g. yolo26n.pt. Intended for bench "
+            "trials on a webcam, where the project's aerial and thermal "
+            "models are out of domain and a stock COCO model gives working "
+            "detections for exercising the rest of the pipeline."
+        ),
+    )
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        nargs=2,
+        default=None,
+        metavar=("H", "W"),
+        help="Input shape override, required with --weights",
+    )
+    parser.add_argument(
+        "--classes",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Class ids to keep. COCO person is 0.",
+    )
 
     parser.add_argument("--conf", type=float, default=CONF)
     parser.add_argument("--device", default=0)
@@ -412,7 +447,16 @@ def main():
     )
     import geolocate
 
-    names = args.ensemble or [args.model or "MT-005"]
+    if args.weights:
+        names = [Path(args.weights).stem]
+
+        if args.imgsz is None:
+            args.imgsz = [480, 640]
+
+        print("NOTE: running arbitrary weights. This exercises the pipeline;")
+        print("      it is not a validation of the project's detectors.")
+    else:
+        names = args.ensemble or [args.model or "MT-005"]
 
     device = args.device
 
@@ -422,7 +466,12 @@ def main():
     print(f"payload: {' + '.join(names)}"
           f"{'  (ensemble, WBF)' if len(names) > 1 else ''}")
 
-    detector = Detector(names, device, conf=args.conf)
+    detector = Detector(
+        names, device, conf=args.conf,
+        explicit_weights=args.weights,
+        shape_override=tuple(args.imgsz) if args.imgsz else None,
+        classes=args.classes,
+    )
 
     frames, fps, (width, height), total = open_source(args.source)
 
