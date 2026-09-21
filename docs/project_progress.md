@@ -52,10 +52,12 @@
 |    42 | Concept of operations decision (detect-and-report)        | Completed   |
 |    43 | False-positive composition analysis                       | Completed   |
 |    44 | MT-009 hard-negative mining                               | In progress |
-|    45 | Thermal camera selection (sensor resolution study)        | Pending     |
-|    46 | Embedded companion-computer selection                     | Pending     |
-|    47 | Embedded model deployment/benchmarking                    | Pending     |
-|    48 | UAV payload/system integration                            | Pending     |
+|    45 | Payload interface control document                        | Completed   |
+|    46 | Payload hardware selection matrix                         | Completed   |
+|    47 | Thermal camera procurement                                | Pending     |
+|    48 | Companion-computer procurement and on-hardware benchmark  | Pending     |
+|    49 | Embedded model deployment/benchmarking                    | Pending     |
+|    50 | UAV payload/system integration                            | Pending     |
 
 ---
 

@@ -72,6 +72,8 @@ are trained and evaluated on unrelated datasets. See
 | [`docs/thermal_baseline.md`](docs/thermal_baseline.md) | Frozen MT-005 reference for all future experiments |
 | [`docs/deployment_target.md`](docs/deployment_target.md) | Project context, target hardware, and what runs on it |
 | [`docs/literature_comparison.md`](docs/literature_comparison.md) | Positioning against the reference SAR-UAV systems |
+| [`docs/payload_icd.md`](docs/payload_icd.md) | Interface control document for the payload |
+| [`docs/hardware_selection.md`](docs/hardware_selection.md) | Hardware trade study with measured justification |
 
 ---
 
