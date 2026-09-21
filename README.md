@@ -1,79 +1,155 @@
-# Human Detection System for Fixed-Wing eVTOL UAV
+# Human Detection Payload - Fixed-Wing eVTOL UAV
 
 ## Project
 
 **Development of a Fixed Wing eVTOL UAV for Emergency Logistics**
 
-This repository contains the development work for the human-detection subsystem
-of the UAV project.
+This repository holds the human-detection payload for that aircraft: the
+subsystem that finds people from the air during search-and-rescue and
+emergency-logistics operations, converts each detection into a ground
+coordinate, and reports it to the ground station.
 
-The detection subsystem supports identification of people from an aerial
-platform during emergency and logistics operations. Development has proceeded
-in stages, beginning with RGB aerial imagery, extending to thermal/infrared
-sensing, and now covering tracking, movement detection and a real-time
-pipeline.
+The payload is **not** part of the flight-control loop. It consumes aircraft
+state over MAVLink and emits detections. Its failure must not affect
+controllability.
 
 ---
 
-## Current Pipeline
+## Status
+
+| Area | State |
+|------|-------|
+| Detector | 10 experiments complete, MT-005 frozen as baseline |
+| Runtime | `scripts/payload.py` - detection, tracking, movement, geolocation |
+| Export | ONNX, verified bit-exact at native input shape |
+| Benchmarks | Accuracy, latency, CPU, memory, sensor resolution |
+| Documentation | 9 documents, including payload ICD and hardware matrix |
+| Hardware | **Nothing procured.** All deployment figures are extrapolated |
+
+---
+
+## Headline Results
+
+Held-out HIT-UAV test split: **579 images, 2,611 person instances**, never
+used for training or model selection.
+
+| Configuration | Recall | Precision | Missed | Unmatched | Blind images |
+|---------------|--------|-----------|-------:|----------:|-------------:|
+| MT-005 (baseline) | 0.9288 | 0.7917 | 186 | 638 | 8 |
+| **MT-005 + MT-006, WBF** | **0.9406** | **0.7992** | **155** | **617** | **5** |
+
+The two-model fusion is the only configuration found that improves on the
+baseline **on every axis at once** - more people found, fewer missed, *fewer*
+false positives, higher precision. Its cost is 2x inference.
+
+### It works better in the dark
+
+| Condition | Images | Recall | Precision |
+|-----------|-------:|--------|-----------|
+| **Night** | 396 | **0.9422** | **0.8234** |
+| Day | 183 | 0.8786 | 0.6860 |
+
+Thermal sensing does not use visible light, so darkness is the detector's
+*best* condition. Sun-heated roads and rooftops reach body temperature in
+daylight and the contrast collapses. **The hard case is noon, not midnight.**
+
+---
+
+## Pipeline
 
 ```text
-Aerial Image / Video / Camera
-        |
-        v
-Ego-motion estimation  ----+
-        |                  |
-        v                  |
-YOLO26n Human Detector     |
-        |                  |
-        v                  |
-Confidence Filtering       |
-        |                  |
-        v                  |
-ByteTrack Tracking         |
-        |                  |
-        v                  v
-World-frame stabilisation
-        |
-        v
-Movement Classification
-        |
-        v
-Annotated video + JSONL detection stream
-        |
-        v
-Future: UAV payload / ground station integration
+   Thermal camera ----+
+                      |
+   RGB camera --------+---> [ Companion Computer ]
+                      |
+   MAVLink state -----+
+                              |
+        +---------------------+---------------------+
+        |                                           |
+        v                                           v
+  Ego-motion estimate                     Detector (1 or N models)
+  LK flow + affine                        weighted box fusion
+        |                                           |
+        |                                           v
+        |                                     ByteTrack
+        |                                           |
+        +--------------> World-frame <--------------+
+                         stabilisation
+                              |
+                              v
+                     Movement classification
+                     moving / stationary / edge / unknown
+                              |
+                              v
+                        Geolocation
+                     lat, lon, error estimate
+                              |
+                              v
+              JSONL detection stream --> Ground station
+```
+
+Run it:
+
+```bash
+python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemetry state.jsonl --jsonl detections.jsonl
 ```
 
 ---
 
-## Reference Models
+## Experiments
 
-| Role                 | Model  | Modality | Input | Dataset         |
-| -------------------- | ------ | -------- | ----: | --------------- |
-| RGB reference        | MT-004 | RGB      |  1280 | VisDrone Person |
-| Thermal reference    | MT-005 | Thermal  |   640 | HIT-UAV Person  |
-| Thermal localization | MT-006 | Thermal  |   960 | HIT-UAV Person  |
+| ID | Modality | Change under test | Outcome |
+|----|----------|-------------------|---------|
+| MT-001 | RGB | 3-epoch pilot | Pipeline verified |
+| MT-002 | RGB | 640 px baseline | mAP@50 ~0.50 |
+| MT-003 | RGB | 960 px | Improved |
+| MT-004 | RGB | 1280 px | mAP@50 0.654, RGB reference |
+| MT-005 | Thermal | 640 px baseline | **Frozen baseline** |
+| MT-006 | Thermal | 960 px | Recall down, localisation up |
+| MT-007 | Thermal | 256 px crop augmentation | Rejected |
+| MT-008 | Thermal | mosaic = 0 | Rejected, merged boxes worse |
+| MT-009 | Thermal | hard-negative mining | Rejected, no measurable gain |
+| MT-010 | Thermal | box-loss weight 15.0 | In progress |
 
-RGB and thermal metrics are **not** comparable to each other: the two models
-are trained and evaluated on unrelated datasets. See
-[`docs/training_log.md`](docs/training_log.md) section 17.
+**Seven directions tested; none improved the single-model baseline.** Model
+capacity was ruled out on compute, not accuracy: YOLO26s runs at an estimated
+1.7-2.8 FPS on the target against a 6.7 FPS requirement.
+
+Full detail, including every negative result, in
+[`docs/training_log.md`](docs/training_log.md).
+
+---
+
+## What the Failures Actually Are
+
+Of MT-005's unmatched predictions, measured on the training split:
+
+| Category | Share |
+|----------|-------|
+| **Near-miss box on a real person** (IoU 0.25-0.50) | **50.7%** |
+| Touching a real person | 5.1% |
+| Genuine background firing | 44.1% |
+
+Over half the "false positives" found a person and localised them poorly. The
+evaluation counts each twice - once as a missed person, once as a false
+positive - so **the precision problem and the recall problem are the same
+problem**. That is why fusing two near-misses improves both columns at once.
 
 ---
 
 ## Documentation
 
-| Document                                               | Contents                                                  |
-| ------------------------------------------------------ | --------------------------------------------------------- |
-| [`docs/project_progress.md`](docs/project_progress.md) | Stage-by-stage progress and results summary                |
-| [`docs/training_log.md`](docs/training_log.md)         | All training experiments, error analyses and the benchmark |
-| [`docs/realtime_pipeline.md`](docs/realtime_pipeline.md) | Runtime pipeline, movement detection, measured latency   |
-| [`docs/system_architecture.md`](docs/system_architecture.md) | Architecture and design decisions                    |
-| [`docs/thermal_baseline.md`](docs/thermal_baseline.md) | Frozen MT-005 reference for all future experiments |
-| [`docs/deployment_target.md`](docs/deployment_target.md) | Project context, target hardware, and what runs on it |
-| [`docs/literature_comparison.md`](docs/literature_comparison.md) | Positioning against the reference SAR-UAV systems |
-| [`docs/payload_icd.md`](docs/payload_icd.md) | Interface control document for the payload |
-| [`docs/hardware_selection.md`](docs/hardware_selection.md) | Hardware trade study with measured justification |
+| Document | Contents |
+|----------|----------|
+| [`docs/project_progress.md`](docs/project_progress.md) | Stage-by-stage progress |
+| [`docs/training_log.md`](docs/training_log.md) | Every experiment, error analysis and benchmark |
+| [`docs/thermal_baseline.md`](docs/thermal_baseline.md) | Frozen MT-005 reference and all-conditions results |
+| [`docs/realtime_pipeline.md`](docs/realtime_pipeline.md) | Runtime pipeline, movement detection, latency |
+| [`docs/system_architecture.md`](docs/system_architecture.md) | Architecture and design decisions |
+| [`docs/deployment_target.md`](docs/deployment_target.md) | Target hardware, frame-rate requirement, what runs |
+| [`docs/hardware_selection.md`](docs/hardware_selection.md) | Hardware trade study, every requirement measured |
+| [`docs/payload_icd.md`](docs/payload_icd.md) | Interface control document |
+| [`docs/literature_comparison.md`](docs/literature_comparison.md) | Positioning against Rizk [3] and Lygouras [4] |
 
 ---
 
@@ -82,90 +158,94 @@ are trained and evaluated on unrelated datasets. See
 Datasets, weights and training outputs are excluded from Git (see
 `.gitignore`); the scripts regenerate them.
 
-### Dataset preparation
-
-| Script                            | Purpose                                      |
-| --------------------------------- | -------------------------------------------- |
-| `convert_visdrone.py`             | VisDrone DET to single-class YOLO format      |
-| `convert_hit_uav.py`              | HIT-UAV COCO to single-class YOLO format      |
-| `create_hit_uav_crops.py`         | 256 px crop-augmented thermal training set    |
-| `visualize_dataset.py`            | Verify RGB annotations                        |
-| `visualize_hit_uav.py`            | Verify thermal annotations                    |
-| `visualize_hit_uav_crops.py`      | Verify generated crops                        |
-
-### Training and evaluation
-
-| Script                            | Purpose                                      |
-| --------------------------------- | -------------------------------------------- |
-| `train_pilot.py`                  | Pilot training run                            |
-| `benchmark_models.py`             | Uniform accuracy benchmark across all models  |
-| `benchmark_latency.py`            | Deployment latency, with launch-bound check   |
-| `benchmark_edge_cpu.py`           | CPU-only latency, Raspberry Pi proxy          |
-| `coverage_requirements.py`        | Derive required FPS from the mission          |
-| `sensor_resolution_study.py`      | Detection vs thermal sensor resolution        |
-| `mine_hard_negatives.py`          | Mine false positives as training negatives    |
-| `operating_point.py`              | Pick the confidence threshold from mission cost |
-| `export_models.py`                | ONNX export with verification                 |
-| `train_mt008.py`                  | MT-008 mosaic ablation                        |
-| `evaluate_experiment.py`          | Full baseline comparison for one experiment   |
-
-### Error analysis
-
-| Script                            | Purpose                                      |
-| --------------------------------- | -------------------------------------------- |
-| `analyze_small_objects.py`        | Size-stratified recall                        |
-| `analyze_mt005_test_errors.py`    | Thermal test error analysis                   |
-| `analyze_mt006_test_errors.py`    | MT-006 equivalent                             |
-| `analyze_mt007_test_errors.py`    | MT-007 equivalent                             |
-| `analyze_mt005_remaining_misses.py` | Categorise remaining misses                 |
-| `compare_mt005_confidence.py`     | Confidence-threshold diagnostic               |
-| `compare_mt005_vs_mt007.py`       | Per-person model comparison                   |
-| `compare_standard_vs_tiled.py`    | Tiled-inference comparison                    |
-| `test_tiled_inference.py`         | Tiled inference implementation                |
-| `visualize_mt005_vs_mt007_errors.py` | Contact sheets of disagreements            |
-| `compare_mt005_vs_mt007_conf010.py` | Per-person comparison at any threshold      |
-| `analyze_common_failures.py`      | Characterise shared failures                  |
-| `verify_crowding_hypothesis.py`   | Diagnose the mechanism of each miss           |
-| `ensemble_thermal.py`             | File-level fusion study                       |
-| `ensemble_detect.py`              | Three-model ensemble inference pipeline       |
+Scripts resolve the project root from their own location. When running from a
+Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 
 ### Runtime
 
-| Script                            | Purpose                                      |
-| --------------------------------- | -------------------------------------------- |
-| `payload.py`                      | **Unified runtime: ensemble + tracking + movement + geolocation** |
-| `realtime_detect.py`              | Single-model pipeline (payload.py reuses its components) |
-| `make_test_sequence.py`           | Synthesise a validation sequence with truth   |
-| `geolocate.py`                    | Pixel detections to ground coordinates        |
+| Script | Purpose |
+|--------|---------|
+| `payload.py` | **Unified runtime**: detection, fusion, tracking, movement, geolocation |
+| `realtime_detect.py` | Single-model pipeline; `payload.py` reuses its components |
+| `ensemble_detect.py` | Ensemble inference with per-stage timing |
+| `geolocate.py` | Pixel detections to ground coordinates |
+
+### Dataset preparation
+
+| Script | Purpose |
+|--------|---------|
+| `convert_visdrone.py` | VisDrone DET to single-class YOLO |
+| `convert_hit_uav.py` | HIT-UAV COCO to single-class YOLO |
+| `create_hit_uav_crops.py` | 256 px crop-augmented training set (MT-007) |
+| `mine_hard_negatives.py` | Mine false positives as training negatives (MT-009) |
+| `make_test_sequence.py` | Synthesise a validation sequence with known truth |
+| `visualize_dataset.py` | Verify RGB annotations |
+| `visualize_hit_uav.py` | Verify thermal annotations |
+| `visualize_hit_uav_crops.py` | Verify generated crops |
+
+### Training and benchmarking
+
+| Script | Purpose |
+|--------|---------|
+| `train_pilot.py` | Pilot training run |
+| `train_mt008.py` | Controlled experiments (mosaic, dataset, loss weights) |
+| `benchmark_models.py` | Uniform accuracy benchmark across models |
+| `benchmark_latency.py` | Deployment latency with launch-bound diagnostic |
+| `benchmark_edge_cpu.py` | CPU-only latency, Raspberry Pi proxy |
+| `export_models.py` | ONNX export with verification against PyTorch |
+| `coverage_requirements.py` | Derive required frame rate from the mission |
+| `sensor_resolution_study.py` | Detection vs thermal sensor resolution |
+| `operating_point.py` | Pick the confidence threshold from mission cost |
+
+### Error analysis
+
+| Script | Purpose |
+|--------|---------|
+| `evaluate_experiment.py` | Full baseline comparison for one experiment |
+| `analyze_small_objects.py` | Size-stratified recall |
+| `analyze_mt005_test_errors.py` | Thermal test error analysis |
+| `analyze_mt006_test_errors.py` | MT-006 equivalent |
+| `analyze_mt007_test_errors.py` | MT-007 equivalent |
+| `analyze_mt005_test_errors_conf010.py` | Thermal test error analysis at conf 0.10 |
+| `analyze_mt005_remaining_misses.py` | Categorise remaining misses |
+| `analyze_common_failures.py` | Characterise shared failures |
+| `verify_crowding_hypothesis.py` | Diagnose the mechanism of each miss |
+| `compare_mt005_confidence.py` | Confidence-threshold diagnostic |
+| `compare_mt005_vs_mt007.py` | Per-person model comparison |
+| `compare_mt005_vs_mt007_conf010.py` | Per-person comparison at any threshold |
+| `compare_standard_vs_tiled.py` | Tiled-inference comparison |
+| `ensemble_thermal.py` | File-level fusion study |
+| `test_tiled_inference.py` | Tiled inference implementation |
+| `visualize_mt005_vs_mt007_errors.py` | Contact sheets of disagreements |
 
 ---
 
-## Usage
+## Key Decisions
 
-Run the payload on a video. Single model:
+**Detect-and-report is the primary mission.** In search and rescue the
+highest-priority casualties are unconscious or trapped, and therefore
+stationary - a movement classifier labels them identically to a warm rock.
+Movement classification is a loiter-phase capability, not a search-phase
+constraint. See [`docs/training_log.md`](docs/training_log.md) section 28.
 
-```bash
-python scripts/payload.py --source flight.mp4 --model MT-005 --jsonl detections.jsonl
-```
+**Thermal is the detector; RGB is for delivery confirmation.** Thermal is the
+light-independent modality and the one that fits the compute budget. MT-004 at
+1280 px cannot run on a CPU-only board.
 
-The best-measured configuration, with geolocated output:
+**Thermal sensor resolution is the binding purchase decision.** A 160 x 120
+module loses one person in three. **384 x 288 is the floor.**
 
-```bash
-python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemetry state.jsonl --jsonl detections.jsonl
-```
+**The frame-rate requirement is derived, not assumed.** 6.7 FPS at 60 m,
+falling to 4.0 at 100 m - set by ground coverage, not video smoothness.
 
-Benchmark accuracy across all reference models (one model per invocation):
+---
 
-```bash
-python scripts/benchmark_models.py --models MT-005
-```
+## Limitations
 
-Measure deployment latency:
-
-```bash
-python scripts/benchmark_latency.py --runs 200
-```
-
-Scripts resolve the project root from their own location. When running from a
-Git worktree while datasets and training runs live in the main checkout, set
-`HDU_ROOT` to the main checkout path.
+- **No hardware.** Every deployment figure is extrapolated from x86.
+- **No real flight video.** Tracking and movement are validated on a
+  synthetic sequence with one moving target.
+- **No smoke or fog data.** Obscurant penetration is inferred from LWIR
+  physics, not measured.
+- **RGB and thermal metrics are not comparable** - unrelated datasets.
+- **Daylight is the weak case** at 0.879 recall.
