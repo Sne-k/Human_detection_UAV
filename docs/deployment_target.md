@@ -4,11 +4,11 @@ This page records where the human-detection subsystem sits in the wider UAV
 project, what hardware it must eventually run on, and what that hardware
 implies for the models developed so far.
 
-It exists because the detection work was developed entirely on an RTX 4050
-laptop, while the aircraft will carry a Raspberry Pi class board. Several
-optimisation results measured during development **do not transfer to the
-target at all**, and that needs to be stated plainly rather than discovered
-during integration.
+It exists for two reasons. The detection work was developed entirely on an
+RTX 4050 laptop, and several optimisation results measured there **do not
+transfer to a CPU-only companion computer at all** - better stated plainly now
+than discovered during integration. And the board is still undecided, so the
+useful output is a requirement to select against rather than a tuning target.
 
 ---
 
@@ -68,32 +68,37 @@ does not command the aircraft.
 
 ---
 
-## 2. Hardware Target
+## 2. Hardware Candidates
 
-Selected under explicit budget constraints. A Jetson was considered and
-**rejected on cost**.
+**The companion computer is not yet decided.** A Raspberry Pi 5 class board is
+the leading candidate under budget constraints, with a Jetson considered and
+set aside on cost, but nothing is committed and no hardware has been bought.
 
-| Component         | Selection                                      |
-| ----------------- | ---------------------------------------------- |
-| Flight controller | Pixhawk-class (separate from vision)           |
-| Companion computer| Raspberry Pi 5, 2 GB                           |
-| AI accelerator    | Optional, only if required                     |
-| RGB camera        | USB/CSI, not yet purchased                     |
-| Thermal camera    | Low-resolution LWIR module, not yet purchased  |
-| Link              | MAVLink to flight controller                   |
+| Component          | Status                                          |
+| ------------------ | ----------------------------------------------- |
+| Flight controller  | Pixhawk-class, separate from vision             |
+| Companion computer | **Undecided** - Pi 5 class is the front-runner  |
+| AI accelerator     | Undecided, needed only if the board falls short |
+| RGB camera         | Not purchased                                   |
+| Thermal camera     | Low-resolution LWIR, not purchased              |
+| Link               | MAVLink to flight controller                    |
 
-Raspberry Pi 5: 4x Cortex-A76 at 2.4 GHz, no CUDA device.
+Because the board is open, the useful thing is not to optimise for one
+candidate but to state the **requirement** the board has to meet. Section 3
+derives that from the mission, and section 4 says what clears it.
 
 ### What this invalidates
 
-Three results measured during development do not apply to this target:
+If the board is CPU-only - which every candidate under consideration is,
+absent an accelerator - then three results measured during development do not
+apply:
 
-| Development result                     | Applies to the Pi 5? |
-| -------------------------------------- | -------------------- |
-| CUDA-graph speedup, 16x on MT-005      | **No** - no CUDA device |
-| Launch-bound diagnosis                 | **No** - no kernel launches to remove |
-| Batch-8 throughput figures             | **No** - a live camera delivers one frame at a time |
-| ONNX export and its verification       | **Yes** - this is the part that transfers |
+| Development result                | Applies to a CPU-only board? |
+| --------------------------------- | ---------------------------- |
+| CUDA-graph speedup, 16x on MT-005 | **No** - no CUDA device |
+| Launch-bound diagnosis            | **No** - no kernel launches to remove |
+| Batch-8 throughput figures        | **No** - a live camera delivers one frame at a time |
+| ONNX export and its verification  | **Yes** - this is the part that transfers |
 
 The launch-bound analysis was correct about the development machine and is
 still the reason single-frame GPU timings there looked flat across
@@ -123,7 +128,8 @@ purchase decision rests on these numbers.
 
 ### What this means
 
-**MT-005 is deployable on the budget hardware; the ensemble is not.**
+**A single 640 px model is deployable on a CPU-only board; the ensemble is
+not, at least not with movement classification.**
 
 This inverts the conclusion reached from GPU measurements. On the laptop, the
 three-model ensemble under CUDA graphs cost 9.4 ms per frame and was
@@ -142,16 +148,68 @@ for this aircraft would have to drop to 640 px, which returns it to roughly
 MT-002 performance (mAP@50 about 0.50). That is a real and unresolved tension
 between the RGB accuracy work and the deployment constraint.
 
-### Is 5-9 FPS enough?
+---
 
-Probably yes, for this mission. At 20 m/s cruise, 5 FPS gives a detection
-opportunity every 4 m of ground track. Search and rescue needs coverage of the
-search area, not high frame rate; a person is typically in view across many
-consecutive frames. The tracking and movement-detection stages already assume
-a modest frame rate.
+## 3b. How Much Frame Rate Does the Mission Actually Need?
 
-This should still be verified against the camera's field of view and the
-planned search altitude, which are not yet fixed.
+Asking a board to hit 30 FPS is a reflex from video, not a requirement. A
+search payload needs two things, and both are set by ground speed and the
+camera's along-track footprint. Derived by
+`scripts/coverage_requirements.py` at 20 m/s cruise with a 640 x 512 sensor
+and a 50 degree horizontal field of view:
+
+| Altitude | Swath  | Along-track | Dwell  | Coverage | Confirm | Tracking |
+| -------: | -----: | ----------: | -----: | -------: | ------: | -------: |
+|     60 m |  56.0 m|      44.8 m | 2.24 s | 0.64 FPS | 1.34 FPS| 6.70 FPS |
+|     80 m |  74.6 m|      59.7 m | 2.98 s | 0.48 FPS | 1.01 FPS| 5.03 FPS |
+|    100 m |  93.3 m|      74.6 m | 3.73 s | 0.38 FPS | 0.80 FPS| 4.02 FPS |
+|    130 m | 121.2 m|      97.0 m | 4.85 s | 0.29 FPS | 0.62 FPS| 3.09 FPS |
+
+- **Coverage** - every point of ground passes through at least one processed
+  frame, with 30% along-track overlap so nothing is lost at a frame edge.
+- **Confirm** - three frames on the same target, so a detection is not a
+  single-frame artefact.
+- **Tracking** - the 15 frames the movement classifier needs before it will
+  commit to moving or stationary.
+
+**The binding requirement is 6.7 FPS**, at the lowest altitude, and it comes
+from movement detection rather than from coverage. Coverage alone is satisfied
+below 1 FPS, because the aircraft takes 2-5 seconds to traverse its own
+footprint. Area search rate at 60 m is about 4.0 km2/h.
+
+### Matching that against the measurements
+
+| Configuration          | Estimated FPS | 6.7 FPS (tracking) | 1.34 FPS (report only) |
+| ---------------------- | ------------- | ------------------ | ---------------------- |
+| MT-005 single, CPU     | 5.4 - 9.0     | Marginal at 60 m, clears it at 80 m+ | Yes, comfortably |
+| MT-007 single, CPU     | 5.8 - 9.5     | Same               | Yes                    |
+| MT-006 single, CPU     | 2.6 - 4.3     | No                 | Yes                    |
+| 3-model ensemble, CPU  | 1.3 - 2.2     | No                 | Marginal               |
+| MT-004 RGB 1280, CPU   | 1.1 - 1.8     | No                 | Marginal               |
+
+This is a more useful answer than "the ensemble is not viable". It is not
+viable *for movement classification*. It is close to sufficient for the
+detect-and-report mission, which is the part that actually saves lives.
+
+Three ways to buy margin without new hardware, in order of preference:
+
+1. **Fly higher.** At 100 m the tracking requirement falls to 4.0 FPS and a
+   single CPU model clears it outright. The detector was trained on imagery
+   from 60-130 m, so this costs nothing in accuracy.
+2. **Relax movement classification.** Reporting *where* people are, without
+   classifying movement, drops the requirement to 1.34 FPS and puts even the
+   ensemble in range.
+3. **Shorten the movement history window.** 15 frames is a tuning choice, not
+   a physical constant; 8 frames would halve the requirement, at some cost in
+   movement-classification stability.
+
+### The specification to shop with
+
+Any companion computer that sustains **about 7 FPS on a 640 x 512 YOLO26n**
+satisfies the full mission at every trained altitude. That is the number to
+take to a hardware trade study - considerably less demanding than a reflex
+30 FPS target, which would oversize the board by roughly an order of magnitude
+on an airframe where weight and power are already constrained.
 
 ---
 
