@@ -137,11 +137,21 @@ python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemet
 | MT-007 | Thermal | 256 px crop augmentation | Rejected |
 | MT-008 | Thermal | mosaic = 0 | Rejected, merged boxes worse |
 | MT-009 | Thermal | hard-negative mining | Rejected, no measurable gain |
-| MT-010 | Thermal | box-loss weight 15.0 | In progress |
+| MT-010 | Thermal | box-loss weight 15.0 | Rejected, worse on every axis |
+| MT-011 | Thermal | VisDrone -> HIT-UAV transfer | Running |
+| MT-012 | Thermal | P2 small-object head | **Vetoed on compute**, behind a decision gate |
+| MT-013 | Thermal | NWD localisation loss | Queued |
 
-**Seven directions tested; none improved the single-model baseline.** Model
+**Eight directions tested; none improved the single-model baseline.** Model
 capacity was ruled out on compute, not accuracy: YOLO26s runs at an estimated
-1.7-2.8 FPS on the target against a 6.7 FPS requirement.
+1.8-2.9 FPS on the target against a 6.7 FPS requirement.
+
+The first seven all attacked target *scale* and moved no failure mechanism at
+all. MT-010 is the first that moved its target - merged boxes fell from 57 to
+49 - and still lost, because total loss is a budget: doubling the box term
+halves the relative weight of classification, and blind images more than
+doubled from 8 to 18. That is why MT-013 changes the *shape* of the
+localisation loss rather than its weight.
 
 Full detail, including every negative result, in
 [`docs/training_log.md`](docs/training_log.md).
@@ -218,11 +228,14 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | Script | Purpose |
 |--------|---------|
 | `train_pilot.py` | Pilot training run |
-| `train_mt008.py` | Controlled experiments (mosaic, dataset, loss weights) |
+| `train_mt008.py` | Controlled experiments (mosaic, dataset, loss weights, starting weights, NWD) |
+| `nwd_loss.py` | Normalized Wasserstein Distance localisation loss, with a self-test |
 | `benchmark_models.py` | Uniform accuracy benchmark across models |
 | `benchmark_latency.py` | Deployment latency with launch-bound diagnostic |
 | `benchmark_edge_cpu.py` | CPU-only latency, Raspberry Pi proxy |
 | `architecture_budget.py` | Gate: does a candidate architecture fit the target, before training it |
+| `quantize_int8.py` | INT8 static quantisation, with a QDQ-fusion diagnostic and mandatory re-evaluation |
+| `run_experiment_queue.py` | Chain training, test metrics, predictions and error analysis unattended |
 | `export_models.py` | ONNX export with verification against PyTorch |
 | `coverage_requirements.py` | Derive required frame rate from the mission |
 | `sensor_resolution_study.py` | Detection vs thermal sensor resolution |

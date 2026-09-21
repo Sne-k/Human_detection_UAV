@@ -2102,3 +2102,113 @@ What has never been tried is changing the *shape* of the localisation loss
 rather than its weight - keeping the classification term untouched and making
 the box term informative where it currently is not. That is exactly what NWD
 does, and it is why MT-013 is the next run rather than another weight sweep.
+
+---
+
+## 35. INT8 Quantisation Rejected - It Costs 406 People
+
+INT8 was the one remaining lever that makes the payload *lighter* rather than
+heavier. Everything else considered either costs compute or is free; nothing
+gives any back. With the deployed baseline sitting at "marginal" against the
+6.7 FPS requirement, and the two-model ensemble rejected purely on its 2x cost,
+a 2-3x speedup would have changed two answers at once.
+
+It does not deliver one, and the attempt produced three findings worth keeping.
+
+### Finding 1: the wrong activation type makes it 2.3x slower
+
+First attempt, static QDQ quantisation with **int8** activations and
+per-channel int8 weights:
+
+| | Size | Dev CPU | Pi 5 estimate |
+|---|-----:|--------:|---------------|
+| FP32 | 9.76 MB | 35.5 ms | 5.6 - 9.4 FPS |
+| INT8, int8 activations | 3.03 MB | **82.0 ms** | 2.4 - 4.1 FPS |
+
+**0.43x - it got 2.3x slower.** ONNX Runtime's x86 CPU kernels are built for
+the `u8s8` combination: uint8 activations against int8 weights. With int8
+activations the integer path is not taken, so every convolution still runs in
+FP32 *and* pays for the quantise/dequantise conversions around it. Switching
+activations to uint8 recovered it to 1.17x.
+
+This is a property of the runtime, not of the model, and it is the reason
+`results/quantization/quantization.json` records the exact ONNX Runtime
+version alongside the numbers.
+
+### Finding 2: quantising the detection head silently destroys the detector
+
+With uint8 activations the model was 1.17x faster and **found nothing at all**
+- zero detections across all 579 test images, against 368 images with
+detections for FP32.
+
+The cause is visible in the raw network output on a single frame:
+
+| | Confidence max | Confidence mean | Box coordinate range |
+|---|---------------:|----------------:|----------------------|
+| FP32 | 0.008748 | 0.000032 | [-74.96, 638.86] |
+| INT8 | **0.000000** | **0.000000** | [-82.42, 639.47] |
+
+**Box regression survived intact; the classification branch collapsed to
+exactly zero.** Confidences occupy a very small range near zero, so mapping
+them onto 256 integer levels with a scale set by the calibrated maximum rounds
+the entire branch away. The boxes still looked healthy, which is precisely
+what makes this dangerous: a latency benchmark on the broken model reports a
+speedup, because timing does not care whether the output is meaningful.
+
+Excluding the detection head - 79 nodes under `/model.23/` - from
+quantisation and leaving it in FP32 restores detection. `quantize_int8.py`
+now does this by default, and `--quantise-head` exists only to reproduce the
+failure.
+
+### Finding 3: even done correctly, it costs too much accuracy
+
+With the head excluded, the model works. Evaluated with the project's own
+matching against the frozen baseline, confidence 0.25, IoU >= 0.50:
+
+| Metric | Baseline | FP32 (ONNX) | INT8 | Delta vs baseline |
+|--------|---------:|------------:|-----:|------------------:|
+| Matched persons | 2,425 | **2,425** | 2,019 | **-406** |
+| Missed persons | 186 | **186** | 592 | +406 |
+| Unmatched boxes | 638 | **638** | 1,124 | +486 |
+| Blind images | 8 | **8** | 23 | +15 |
+| Recall | 0.9288 | **0.9288** | 0.7733 | **-0.1555** |
+| Custom precision | 0.7917 | **0.7917** | 0.6424 | -0.1493 |
+
+The FP32 column is worth pausing on. Driving the exported graph directly at
+its native 512 x 640 shape reproduces the frozen baseline **exactly** - every
+delta zero. That validates the prediction path used for the INT8 column, so
+the INT8 losses are attributable to quantisation and not to the harness.
+
+INT8 loses **406 of 2,425 people, 16.7% of every detection the payload makes**,
+and nearly triples the images where a person is present and nothing is
+reported.
+
+### What it buys, and why that settles it
+
+| | Dev CPU | Pi 5 estimate | 6.7 FPS @ 60 m |
+|---|--------:|---------------|----------------|
+| FP32 | 41.8 ms | 4.8 - 8.0 FPS | marginal |
+| INT8 | 35.8 ms | 5.6 - 9.3 FPS | **marginal** |
+
+1.17x, and **the deployment verdict does not change**. Both are marginal at
+60 m and both clear 100 m. Not one decision in this project would be made
+differently.
+
+So the trade is 406 people for a speedup that changes nothing. **INT8 is
+rejected**, and `deployment_target.md` section 4, which listed it as "the most
+promising untried option", is corrected accordingly.
+
+### The caveat that does not rescue it
+
+The 1.17x is an x86 measurement, and the fusion diagnostic shows why it is
+low: **zero QLinearConv nodes**, so the integer kernels were never used even
+with uint8 activations. ONNX Runtime's ARM64 backend has better int8 support,
+so on a real Cortex-A76 the speedup could be considerably larger.
+
+That caveat applies to the speedup only. **The accuracy loss is not hardware
+-dependent** - 406 people are lost on any device, because the arithmetic that
+loses them happens before anything reaches the CPU's instruction set. A larger
+speedup would change the exchange rate, not the fact that the exchange is bad.
+
+If an ARM board is ever in hand, the test to re-run is the latency half. The
+accuracy half is already answered.

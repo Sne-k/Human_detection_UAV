@@ -20,7 +20,10 @@ Datasets, model weights and generated artefacts are excluded from Git via
 | MT-007 | Thermal | 640 | HIT-UAV + 256 px crops | Completed - rejected |
 | MT-008 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
 | MT-009 | Thermal | 640 | HIT-UAV + hard negatives | Completed - rejected |
-| MT-010 | Thermal | 640 | HIT-UAV Person | In progress |
+| MT-010 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
+| MT-011 | Thermal | 640 | HIT-UAV Person | Running - VisDrone transfer |
+| MT-012 | Thermal | 640 | HIT-UAV Person | Vetoed on compute |
+| MT-013 | Thermal | 640 | HIT-UAV Person | Queued - NWD loss |
 
 Training runs are written by Ultralytics under
 `runs/detect/results/training/<ID>/`.
@@ -40,6 +43,8 @@ Training runs are written by Ultralytics under
 | `results/ensemble_pipeline/` | `ensemble_detect.py` |
 | `results/sensor_study/` | `sensor_resolution_study.py` |
 | `results/operating_point/` | `operating_point.py` |
+| `results/quantization/` | `quantize_int8.py` |
+| `results/experiment_queue/` | `run_experiment_queue.py` |
 | `results/hard_negatives/` | `mine_hard_negatives.py` |
 | `results/test_sequence/` | `make_test_sequence.py`, `payload.py` |
 | `results/dataset_check/` | `visualize_dataset.py` |

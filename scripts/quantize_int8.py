@@ -62,6 +62,9 @@ DEPLOY_SHAPE = (512, 640)
 
 CALIBRATION_IMAGES = 200
 
+# The operating point every other analysis in this project uses.
+CONF = 0.25
+
 REQUIREMENTS = [
     ("tracking @ 60 m", 6.70),
     ("tracking @ 100 m", 4.02),
@@ -194,6 +197,43 @@ def fusion_report(path):
     }
 
 
+def head_nodes(path):
+    """
+    Node names belonging to the detection head.
+
+    The head must usually be left in FP32. Its classification branch emits
+    logits whose post-sigmoid confidences sit in a very small range near zero
+    - on a representative frame the maximum is 0.0087 and the mean 3.2e-5.
+    Mapping that onto 256 integer levels, with the scale set by a calibrated
+    maximum, rounds the entire branch to zero, and the detector stops
+    reporting anything at all while its box regression still looks healthy.
+
+    That is exactly what happened here before this exclusion existed, and it
+    is worth stating plainly: the quantised model was 1.14x faster and found
+    nothing.
+    """
+
+    import onnx
+
+    model = onnx.load(str(path))
+
+    modules = [
+        n.name.split("/")[1]
+        for n in model.graph.node
+        if n.name.startswith("/model.")
+    ]
+
+    if not modules:
+        return []
+
+    last = max(modules, key=lambda s: int(s.split(".")[1]))
+
+    return [
+        n.name for n in model.graph.node
+        if n.name.startswith(f"/{last}/")
+    ]
+
+
 def benchmark(path, threads, runs=40):
     import onnxruntime as ort
 
@@ -223,34 +263,80 @@ def benchmark(path, threads, runs=40):
     return statistics.median(samples)
 
 
-def evaluate(path, name):
-    """Full test-split evaluation through the normal inference path."""
+def predict_to_labels(path, out_dir, threads, conf=CONF, iou=0.70):
+    """
+    Run an ONNX graph over the test split and write YOLO-format predictions.
 
-    from ultralytics import YOLO
+    Ultralytics' own validator cannot be used here. The exported graph has a
+    fixed 512 x 640 input, while `val` coerces imgsz to a single integer and
+    feeds a square image, which the session rejects outright. Re-exporting
+    with dynamic axes would sidestep that but would also stop measuring the
+    graph that actually deploys.
 
-    model = YOLO(str(path), task="detect")
+    So the session is driven directly at its native shape, and the output is
+    written in the same format as every other analysis directory in this
+    project - which means the numbers land in `evaluate_experiment.py` and are
+    directly comparable to the frozen baseline rather than to a separately
+    computed mAP.
+    """
 
-    metrics = model.val(
-        data=str(DATASET / "data.yaml"),
-        split="test",
-        imgsz=DEPLOY_SHAPE,
-        batch=1,
-        device="cpu",
-        verbose=False,
-        plots=False,
-        project=str(OUTPUT_DIR),
-        name=name,
-        exist_ok=True,
+    import onnxruntime as ort
+    from ultralytics.utils.nms import non_max_suppression
+    import torch
+
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = threads
+    options.inter_op_num_threads = 1
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+    session = ort.InferenceSession(
+        str(path), options, providers=["CPUExecutionProvider"]
     )
 
-    box = metrics.box
+    meta = session.get_inputs()[0]
+    _, _, net_h, net_w = [d if isinstance(d, int) else 1 for d in meta.shape]
 
-    return {
-        "map50": round(float(box.map50), 4),
-        "map50_95": round(float(box.map), 4),
-        "precision": round(float(box.mp), 4),
-        "recall": round(float(box.mr), 4),
-    }
+    labels_dir = Path(out_dir) / "labels"
+    labels_dir.mkdir(parents=True, exist_ok=True)
+
+    images = sorted((DATASET / "images" / "test").glob("*.jpg"))
+    written = 0
+
+    for image_path in images:
+        tensor = preprocess(image_path, (net_h, net_w))
+
+        if tensor is None:
+            continue
+
+        raw = session.run(None, {meta.name: tensor})[0]
+
+        detections = non_max_suppression(
+            torch.from_numpy(raw), conf_thres=conf, iou_thres=iou, nc=1
+        )[0]
+
+        lines = []
+
+        for *xyxy, score, _cls in detections.tolist():
+            x1, y1, x2, y2 = xyxy
+
+            # Back to normalised centre/size in the network's frame. HIT-UAV
+            # frames are 640 x 512 and the network takes 512 x 640, so no
+            # letterbox padding is applied and the frames coincide.
+            xc = (x1 + x2) / 2 / net_w
+            yc = (y1 + y2) / 2 / net_h
+            w = (x2 - x1) / net_w
+            h = (y2 - y1) / net_h
+
+            lines.append(f"0 {xc:.6f} {yc:.6f} {w:.6f} {h:.6f} {score:.6f}")
+
+        if lines:
+            written += 1
+
+        (labels_dir / f"{image_path.stem}.txt").write_text(
+            "\n".join(lines), encoding="utf-8"
+        )
+
+    return labels_dir, len(images), written
 
 
 def verdict(fps_low, fps_high, required):
@@ -270,6 +356,13 @@ def main():
     parser.add_argument("--activation", choices=["uint8", "int8"], default="uint8",
                         help="Activation type. ORT's x86 CPU kernels are built for "
                              "u8s8; int8 activations usually block QDQ fusion.")
+    parser.add_argument(
+        "--quantise-head",
+        action="store_true",
+        help="Also quantise the detection head. Off by default because "
+             "doing so collapses the classification branch to zero and "
+             "the detector reports nothing.",
+    )
     parser.add_argument("--no-eval", action="store_true")
 
     args = parser.parse_args()
@@ -313,6 +406,11 @@ def main():
         QuantType.QUInt8 if args.activation == "uint8" else QuantType.QInt8
     )
 
+    exclude = [] if args.quantise_head else head_nodes(fp32)
+
+    if exclude:
+        print(f"keeping the detection head in FP32 ({len(exclude)} nodes)")
+
     print(f"quantising (QDQ, {args.activation} activations, "
           "per-channel int8 weights)...")
     quantize_static(
@@ -324,6 +422,7 @@ def main():
         weight_type=QuantType.QInt8,
         per_channel=True,
         reduce_range=False,
+        nodes_to_exclude=exclude,
     )
 
     copy_metadata(fp32, int8)
@@ -418,6 +517,8 @@ def main():
             "activations": args.activation,
             "calibration_images": args.calibration_images,
             "fusion": fusion,
+            "head_excluded": not args.quantise_head,
+            "excluded_nodes": len(exclude),
         },
         "slowdown_range": list(SLOWDOWN_RANGE),
         "speedup": round(speedup, 3),
@@ -438,43 +539,36 @@ def main():
         print("re-evaluation rather than a comparison against the FP32 output.")
         print()
 
-        accuracy = {}
+        analysis_root = (
+            PROJECT_ROOT / "runs" / "detect" / "results" / "error_analysis"
+        )
 
         for label, path in (("FP32", fp32), ("INT8", int8)):
-            print(f"evaluating {label}...")
-            accuracy[label] = evaluate(path, f"{args.model}_{label.lower()}")
+            name = f"{args.model}-{label.lower()}-quant"
+
+            print(f"predicting with {label} at conf {CONF}...")
+
+            labels_dir, total, with_boxes = predict_to_labels(
+                path, analysis_root / name, args.threads
+            )
+
+            print(f"  {total} images, {with_boxes} with at least one detection")
+
+            summary.setdefault("predictions", {})[label] = {
+                "labels": str(labels_dir),
+                "images": total,
+                "images_with_detections": with_boxes,
+            }
 
         print()
-        print(f"{'':10s} {'mAP@50':>9s} {'mAP@50-95':>11s} {'precision':>11s} {'recall':>9s}")
-        print("-" * 54)
+        print("Compare with the project's own matching, against the frozen")
+        print("baseline:")
+        print()
 
         for label in ("FP32", "INT8"):
-            a = accuracy[label]
-            print(f"{label:10s} {a['map50']:9.4f} {a['map50_95']:11.4f} "
-                  f"{a['precision']:11.4f} {a['recall']:9.4f}")
-
-        delta = {
-            k: round(accuracy["INT8"][k] - accuracy["FP32"][k], 4)
-            for k in accuracy["FP32"]
-        }
-
-        print(f"{'delta':10s} {delta['map50']:+9.4f} {delta['map50_95']:+11.4f} "
-              f"{delta['precision']:+11.4f} {delta['recall']:+9.4f}")
-
-        summary["accuracy"] = accuracy
-        summary["accuracy_delta"] = delta
-
-        print()
-
-        if delta["map50"] < -0.02:
-            print("mAP@50 fell by more than 2 points. That is a real accuracy")
-            print("cost and the speedup has to be weighed against it, not")
-            print("assumed free.")
-        elif delta["map50"] < -0.005:
-            print("Small but measurable accuracy cost. Defensible against the")
-            print("speedup, provided it is reported rather than buried.")
-        else:
-            print("No meaningful accuracy cost. The speedup is free.")
+            name = f"{args.model}-{label.lower()}-quant"
+            print(f"  python scripts/evaluate_experiment.py --labels {name} "
+                  f"--label {args.model}-{label}")
 
     (OUTPUT_DIR / "quantization.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
