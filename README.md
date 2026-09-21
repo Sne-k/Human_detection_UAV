@@ -102,6 +102,7 @@ Datasets, weights and training outputs are excluded from Git (see
 | `coverage_requirements.py`        | Derive required FPS from the mission          |
 | `sensor_resolution_study.py`      | Detection vs thermal sensor resolution        |
 | `mine_hard_negatives.py`          | Mine false positives as training negatives    |
+| `operating_point.py`              | Pick the confidence threshold from mission cost |
 | `export_models.py`                | ONNX export with verification                 |
 | `train_mt008.py`                  | MT-008 mosaic ablation                        |
 | `evaluate_experiment.py`          | Full baseline comparison for one experiment   |
