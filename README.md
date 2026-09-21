@@ -71,6 +71,7 @@ are trained and evaluated on unrelated datasets. See
 | [`docs/system_architecture.md`](docs/system_architecture.md) | Architecture and design decisions                    |
 | [`docs/thermal_baseline.md`](docs/thermal_baseline.md) | Frozen MT-005 reference for all future experiments |
 | [`docs/deployment_target.md`](docs/deployment_target.md) | Project context, target hardware, and what runs on it |
+| [`docs/literature_comparison.md`](docs/literature_comparison.md) | Positioning against the reference SAR-UAV systems |
 
 ---
 

@@ -285,6 +285,32 @@ than optional, and the recall target revised accordingly.
 
 ---
 
+## 3e. A Precedent Worth Weighing
+
+Lygouras et al. (2019), reference [4] in the literature survey, built a
+comparable onboard-detection rescue UAV. They used a Raspberry Pi 3 with
+NNPACK for autonomous landing on a fixed target, then concluded that swimmer
+detection needed "a higher resolution as well as a higher frame rate" and a
+"powerful GPU embedded system", and moved to an Nvidia Jetson TX1 running at
+12 fps. Rizk et al. (2021), reference [3], likewise chose a Jetson Xavier NX.
+
+Both reference systems chose Jetson-class hardware. That is a real signal and
+should not be waved away.
+
+Two things make it weaker than it looks here:
+
+1. A Pi 3 is not a Pi 5 - Cortex-A53 at 1.2 GHz against Cortex-A76 at 2.4 GHz,
+   roughly 8-10x in practice.
+2. Their frame-rate requirement was higher. They hover over a drifting swimmer
+   and release apparatus onto them, so position must update quickly. A
+   fixed-wing aircraft flying a search pattern needs 6.7 FPS by the derivation
+   in section 3b, not 12.
+
+See [`literature_comparison.md`](literature_comparison.md) for the full
+comparison.
+
+---
+
 ## 4. Options If More Performance Is Needed
 
 | Option                       | Effect                                    | Cost |
