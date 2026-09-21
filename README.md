@@ -101,6 +101,7 @@ Datasets, weights and training outputs are excluded from Git (see
 | `benchmark_edge_cpu.py`           | CPU-only latency, Raspberry Pi proxy          |
 | `coverage_requirements.py`        | Derive required FPS from the mission          |
 | `sensor_resolution_study.py`      | Detection vs thermal sensor resolution        |
+| `mine_hard_negatives.py`          | Mine false positives as training negatives    |
 | `export_models.py`                | ONNX export with verification                 |
 | `train_mt008.py`                  | MT-008 mosaic ablation                        |
 | `evaluate_experiment.py`          | Full baseline comparison for one experiment   |

@@ -49,10 +49,13 @@
 |    39 | MT-008 mosaic ablation (crowd separation)                 | Completed   |
 |    40 | Model-capacity feasibility (YOLO26s latency)              | Completed   |
 |    41 | Two-model ensemble selection                              | Completed   |
-|    42 | Thermal camera selection (sensor resolution study)        | Pending     |
-|    43 | Embedded companion-computer selection                     | Pending     |
-|    44 | Embedded model deployment/benchmarking                    | Pending     |
-|    45 | UAV payload/system integration                            | Pending     |
+|    42 | Concept of operations decision (detect-and-report)        | Completed   |
+|    43 | False-positive composition analysis                       | Completed   |
+|    44 | MT-009 hard-negative mining                               | In progress |
+|    45 | Thermal camera selection (sensor resolution study)        | Pending     |
+|    46 | Embedded companion-computer selection                     | Pending     |
+|    47 | Embedded model deployment/benchmarking                    | Pending     |
+|    48 | UAV payload/system integration                            | Pending     |
 
 ---
 

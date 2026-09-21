@@ -1534,3 +1534,192 @@ The choice therefore depends on which requirement binds:
 This is the first configuration in the project that improves on the frozen
 baseline without a compensating regression. It should be the reported result,
 with its compute cost stated alongside.
+
+---
+
+## 28. Concept of Operations - Detect-and-Report First
+
+The two-model ensemble in section 27 is the most accurate configuration
+measured, but at 2x inference it cannot sustain the 6.7 FPS that movement
+classification needs at 60 m. That forces a choice, and for a search-and-rescue
+payload the choice is not close.
+
+### Detect-and-report is the primary requirement
+
+Three reasons, in order of weight.
+
+**1. The victims who most need finding are the ones who cannot move.**
+
+A movement classifier separates moving people from stationary ones. In search
+and rescue, the highest-priority casualties are unconscious, injured, trapped
+or hypothermic - and therefore stationary. The classifier would label them
+identically to a warm rock. Thermal search exists precisely to find people who
+cannot signal for themselves, so constraining the search configuration to
+preserve a feature that fails on the most critical casualties inverts the
+mission.
+
+**2. The trade costs found people.**
+
+At 60 m with movement classification, MT-005 alone is the only configuration
+that fits the frame budget. It finds 2,425 of 2,611 test persons against the
+ensemble's 2,456. Accepting 31 fewer found people in exchange for a movement
+label is a poor exchange when a missed person can die and a false alarm costs
+a rescuer a walk.
+
+**3. Movement state is a secondary attribute, not a detection.**
+
+The pipeline already withholds the movement label at frame borders rather than
+guessing, on the principle that a wrong movement label is worse than no label.
+The same principle extends further: movement state is useful context attached
+to a detection, never a precondition for reporting one.
+
+### The aircraft removes the trade anyway
+
+The frame-rate requirement is set by ground speed, and this airframe is an
+eVTOL. It can slow down or hover. From `scripts/coverage_requirements.py`:
+
+| Ground speed | Tracking requirement @ 60 m | @ 100 m |
+| ------------ | --------------------------: | ------: |
+| 20 m/s cruise |                    6.70 FPS | 4.02 FPS |
+| 12 m/s        |                    4.02 FPS | 2.41 FPS |
+| 8 m/s loiter  |                    2.68 FPS | 1.61 FPS |
+
+The two-model ensemble delivers an estimated 1.7 - 2.9 FPS. At 8 m/s and 100 m
+it clears the 1.61 FPS tracking requirement outright.
+
+### Two-phase operation
+
+```text
+   SEARCH PHASE                        INVESTIGATE PHASE
+   20 m/s cruise, 100 m                8 m/s loiter or hover
+   MT-005 + MT-006 WBF                 same ensemble
+   detect and report                   movement classification available
+        |                                      ^
+        |  person detected                     |
+        +--> geolocate (lat/lon + error) ------+
+                   |
+                   v
+        Telemetry / Ground Station
+```
+
+The search phase maximises people found per unit of ground covered. On a
+detection, the geolocated coordinate lets the aircraft return to and loiter
+over the position, where the reduced ground speed lengthens dwell time enough
+that movement classification becomes available with the same models.
+
+Nothing is given up. The mission gets maximum recall during search and the
+movement attribute where it is actually useful - over a confirmed target,
+where "is this person moving" informs triage.
+
+### Consequence
+
+**The reported configuration is MT-005 + MT-006 with weighted box fusion,
+operating detect-and-report.** Movement classification is retained as a
+loiter-phase capability rather than a search-phase constraint.
+
+---
+
+## 29. What the "False Positives" Actually Are
+
+Section 27 showed fusion improving recall and precision simultaneously, which
+is unusual. Investigating why produced the most useful single result in this
+phase.
+
+MT-005 was run over its own **training** split - never the test split, which
+would leak - and every prediction that failed to match an annotated person at
+IoU 0.50 was collected. There are 1,729 of them. Each was then classified by
+how much it overlapped the nearest real person.
+
+| What the "false positive" is                  | Count | Share |
+| --------------------------------------------- | ----: | ----- |
+| Near-miss box **on a real person**, IoU 0.25-0.50 |   877 | 50.7% |
+| Touching a real person, IoU 0-0.25            |    89 |  5.1% |
+| Genuine background firing, IoU = 0            |   763 | 44.1% |
+| **Touching a real person at all**             | **966** | **55.9%** |
+
+### The precision problem and the recall problem are one problem
+
+**Over half of the detector's "false positives" are boxes on real people that
+are simply not accurate enough to count.** A near-miss box is penalised twice
+by the evaluation: once as a missed person, and once as an unmatched
+prediction. It appears in both the recall column and the precision column as a
+separate failure, when it is one failure.
+
+This explains the section 27 result exactly. Weighted box fusion averages two
+independent near-miss boxes; the fused box crosses IoU 0.50; and that single
+correction simultaneously converts a miss into a match *and* deletes what the
+evaluation was counting as a false positive. One mechanism, both columns. The
++31 matched and -21 unmatched are the same 31 events seen from two sides.
+
+It also reframes the whole precision figure. A custom precision of 0.7917 does
+not mean the detector hallucinates people 21% of the time. It means roughly
+9% genuine background firing and roughly 12% boxes that found a person and
+localised them poorly.
+
+### Consequence for hard-negative mining
+
+Hard-negative mining addresses background firing. It can therefore reach at
+most the 44% of unmatched boxes that are genuine background, and none of the
+56% that are localisation failures on real people.
+
+That is a substantially weaker case than Lygouras et al. faced, where the
+false positives were boats in otherwise-empty water - entirely the background
+category. It does not make the experiment worthless, but it caps the available
+gain before the run starts, and the result should be read against that cap.
+
+---
+
+## 30. MT-009 - Hard-Negative Mining
+
+Applies the method from Lygouras et al. [4]: collect the regions the detector
+falsely fires on and train them explicitly as background.
+
+### Mining
+
+Negatives are mined from the **training** split only. Harvesting the model's
+mistakes on test data and training on them would leak the test set and
+invalidate every number in this document.
+
+| Stage                                      | Count |
+| ------------------------------------------ | ----: |
+| False positives found on the training split | 1,729 |
+| Rejected: a real person fell inside the crop | 1,444 |
+| **Usable negative crops**                   | **283** |
+
+The rejection rate is high and unavoidable: 95.9% of these false positives
+occur on images that already contain people, so any window around them tends
+to catch one. A 256 px crop yielded only 156 usable negatives; 128 px yields
+283 while still carrying roughly 7x the area of a typical 13 x 18 px target.
+
+A crop is discarded if any annotated person overlaps it by more than 5% of
+that person's area. Teaching a real person as background would be far worse
+than discarding a good negative.
+
+Each surviving crop is written with an empty label file, which is how YOLO
+represents a background image.
+
+### Configuration
+
+| Parameter     | MT-005 | MT-009 |
+| ------------- | ------ | ------ |
+| Model         | YOLO26n | YOLO26n |
+| Input size    | 640 | 640 |
+| Epochs        | 50 | 50 |
+| Batch size    | 8 | 8 |
+| mosaic        | 1.0 | 1.0 |
+| Training images | 2,029 | **2,312** (+283 negatives) |
+| Val / test    | unchanged | unchanged |
+
+Only the training set differs. Validation and test splits are copied byte for
+byte from HIT-UAV Person, so MT-009 is directly comparable to every other
+thermal experiment.
+
+### Expectation, stated before the result
+
+The negative ratio is 1:7 against Lygouras's 1:1, and section 29 caps the
+addressable share of unmatched boxes at 44%. A large improvement would be
+surprising. The honest prediction is a modest reduction in unmatched boxes
+with recall approximately unchanged.
+
+Recording the expectation in advance keeps the result interpretable either
+way.

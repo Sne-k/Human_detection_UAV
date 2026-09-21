@@ -95,12 +95,19 @@ def main():
         default=0.0,
         help="The single variable under test. MT-005 used 1.0.",
     )
+    parser.add_argument(
+        "--data",
+        default=None,
+        help="Override the dataset config, e.g. the hard-negative variant",
+    )
     parser.add_argument("--resume", action="store_true")
 
     args = parser.parse_args()
 
-    if not DATA.exists():
-        raise SystemExit(f"Dataset config not found: {DATA}")
+    data = Path(args.data) if args.data else DATA
+
+    if not data.exists():
+        raise SystemExit(f"Dataset config not found: {data}")
 
     config = dict(MT005_CONFIG)
     config["mosaic"] = args.mosaic
@@ -108,7 +115,7 @@ def main():
     print("=" * 62)
     print(f"{args.name} - thermal crowd-separation experiment")
     print("=" * 62)
-    print(f"data:    {DATA}")
+    print(f"data:    {data}")
     print(f"output:  {TRAINING_ROOT / args.name}")
     print(f"mosaic:  {args.mosaic}  (MT-005 baseline used 1.0)")
     print("All other parameters are identical to MT-005.")
@@ -119,7 +126,7 @@ def main():
     model = YOLO(weights)
 
     model.train(
-        data=str(DATA),
+        data=str(data),
         project=str(TRAINING_ROOT),
         name=args.name,
         exist_ok=False,
