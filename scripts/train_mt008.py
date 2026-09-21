@@ -67,6 +67,9 @@ MT005_CONFIG = {
     "rect": False,
     "lr0": 0.01,
     "close_mosaic": 10,
+    "box": 7.5,
+    "cls": 0.5,
+    "dfl": 1.5,
     "augment": False,
     "hsv_h": 0.015,
     "hsv_s": 0.7,
@@ -100,6 +103,18 @@ def main():
         default=None,
         help="Override the dataset config, e.g. the hard-negative variant",
     )
+    parser.add_argument(
+        "--box",
+        type=float,
+        default=None,
+        help="Box-loss weight. Ultralytics default and MT-005 value is 7.5.",
+    )
+    parser.add_argument(
+        "--dfl",
+        type=float,
+        default=None,
+        help="Distribution focal loss weight. MT-005 used 1.5.",
+    )
     parser.add_argument("--resume", action="store_true")
 
     args = parser.parse_args()
@@ -112,12 +127,25 @@ def main():
     config = dict(MT005_CONFIG)
     config["mosaic"] = args.mosaic
 
+    if args.box is not None:
+        config["box"] = args.box
+
+    if args.dfl is not None:
+        config["dfl"] = args.dfl
+
     print("=" * 62)
     print(f"{args.name} - thermal crowd-separation experiment")
     print("=" * 62)
     print(f"data:    {data}")
     print(f"output:  {TRAINING_ROOT / args.name}")
     print(f"mosaic:  {args.mosaic}  (MT-005 baseline used 1.0)")
+
+    if args.box is not None:
+        print(f"box:     {args.box}  (MT-005 baseline used 7.5)")
+
+    if args.dfl is not None:
+        print(f"dfl:     {args.dfl}  (MT-005 baseline used 1.5)")
+
     print("All other parameters are identical to MT-005.")
     print("=" * 62)
 

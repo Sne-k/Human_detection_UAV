@@ -216,7 +216,8 @@ in as evidence arrives.
 | --------- | ---------------------------------- | --------------------------- |
 | A         | MT-005 single model                | Frozen baseline             |
 | B         | MT-005 + MT-006 + MT-007, WBF      | Measured, see section 22    |
-| C         | MT-008 single model (mosaic = 0)   | Completed - worse, see below |
+| C         | MT-008 single model (mosaic = 0)   | Completed - rejected         |
+| E         | MT-009 single model (hard negatives) | Completed - rejected       |
 | D         | MT-005 + MT-006, WBF fusion        | **Best measured**            |
 
 | Candidate | Matched | Missed | Unmatched | Precision | Blind | Compute |
@@ -224,10 +225,15 @@ in as evidence arrives.
 | A MT-005  |   2,425 |    186 |       638 | 0.7917    |     8 | 1x      |
 | B 3-model |   2,476 |    135 |       722 | 0.7742    |     4 | 3x      |
 | C MT-008  |   2,424 |    187 |       717 | 0.7717    |    11 | 1x      |
+| E MT-009  |   2,428 |    183 |       637 | 0.7922    |    12 | 1x      |
 | **D MT-005+MT-006** | **2,456** | **155** | **617** | **0.7992** | **5** | **2x** |
 
 Candidate C is rejected: MT-008 matched one fewer person than the baseline and
 raised merged-box failures from 57 to 70, refuting the mosaic hypothesis.
+
+Candidate E is rejected: MT-009 reduced unmatched boxes by one out of 638,
+which is no improvement, and raised blind images from 8 to 12 - the error mode
+that matters most for a search payload.
 
 Candidate B improves recall but at the cost of precision (0.7742 against
 0.7917) and 84 extra unmatched boxes - a trade, not a free improvement.
@@ -238,3 +244,61 @@ blind images down from 8 to 5. It is the only configuration measured so far
 that improves on MT-005 without a compensating regression. Its cost is 2x
 inference, which rules it out where movement classification is required at
 60 m but not for detect-and-report.
+
+---
+
+## 8. All-Conditions Performance - Day vs Night
+
+A search payload must detect people regardless of visible light. That is the
+core reason for a thermal branch, and it is worth measuring rather than
+asserting.
+
+HIT-UAV encodes lighting in the filename (field 0: 0 = day, 1 = night), so
+the held-out test split can be partitioned directly. MT-005, confidence 0.25,
+IoU >= 0.50:
+
+| Condition | Images | Persons | Matched | Recall | Precision | Blind images |
+| --------- | -----: | ------: | ------: | ------ | --------- | -----------: |
+| **Night** |    396 |   2,059 |   1,940 | **0.9422** | **0.8234** | 3 (0.8%) |
+| Day       |    183 |     552 |     485 | 0.8786 | 0.6860    | 5 (2.7%)     |
+| Combined  |    579 |   2,611 |   2,425 | 0.9288 | 0.7917    | 8            |
+
+### The detector performs better in darkness
+
+Night recall exceeds day recall by **6.4 points**, and night precision by
+**13.7 points**. Images where a person is present and nothing at all is
+reported are 3.6 times rarer at night.
+
+This is a physical result, not a quirk of the data. At night the background is
+cool and a human body at roughly 37 C is a high-contrast signature. In
+daylight, sun-heated roads, rooftops, vehicles and bare ground approach or
+exceed body temperature, and the thermal contrast that the detector depends on
+collapses.
+
+It also confirms the section 21 finding from a different direction: recognition
+failures - persons with no overlapping prediction at all - were 2.9x
+over-represented in daylight.
+
+### Consequence
+
+**The requirement to detect people irrespective of visible light is satisfied
+by the thermal branch.** Thermal sensing does not use visible light at all, so
+performance in complete darkness is not merely acceptable, it is the
+detector's best condition.
+
+The weak case is bright daylight, which is the opposite of the usual
+intuition and should be stated explicitly in any write-up. If daylight search
+performance matters for the mission, that is where further effort belongs -
+not darkness.
+
+| Condition            | Coverage                                    |
+| -------------------- | ------------------------------------------- |
+| Night, total darkness| Thermal, recall 0.942                       |
+| Smoke, dust, haze    | Thermal - inferred from LWIR physics, untested |
+| Bright daylight      | Thermal, recall 0.879 - weakest case        |
+| Visible light present| RGB could supplement, but MT-004 at 1280 px does not fit the compute budget |
+
+Two caveats. This is HIT-UAV's day/night split; no dataset in this project
+contains smoke or fog, so obscurant penetration is inferred from the physics of
+long-wave infrared rather than measured. And day performance, while good, is
+the genuine weak point at 0.879.

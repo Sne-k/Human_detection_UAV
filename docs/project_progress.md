@@ -51,11 +51,16 @@
 |    41 | Two-model ensemble selection                              | Completed   |
 |    42 | Concept of operations decision (detect-and-report)        | Completed   |
 |    43 | False-positive composition analysis                       | Completed   |
-|    44 | MT-009 hard-negative mining                               | In progress |
-|    45 | Thermal camera selection (sensor resolution study)        | Pending     |
-|    46 | Embedded companion-computer selection                     | Pending     |
-|    47 | Embedded model deployment/benchmarking                    | Pending     |
-|    48 | UAV payload/system integration                            | Pending     |
+|    44 | MT-009 hard-negative mining                               | Completed   |
+|    45 | Payload interface control document                        | Completed   |
+|    46 | Payload hardware selection matrix                         | Completed   |
+|    47 | Unified payload runtime (ensemble + tracking + geolocation) | Completed |
+|    48 | MT-010 box-loss weight experiment                         | In progress |
+|    49 | All-conditions day/night performance analysis             | Completed   |
+|    50 | Thermal camera procurement                                | Pending     |
+|    51 | Companion-computer procurement and on-hardware benchmark  | Pending     |
+|    52 | Embedded model deployment/benchmarking                    | Pending     |
+|    53 | UAV payload/system integration                            | Pending     |
 
 ---
 

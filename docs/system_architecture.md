@@ -93,11 +93,12 @@ Solid boxes are implemented and validated. Dashed boxes are planned.
 
 | Component            | Status      | Implementation                                     |
 | -------------------- | ----------- | -------------------------------------------------- |
-| Frame acquisition    | Implemented | `scripts/realtime_detect.py`                       |
+| Unified runtime      | Implemented | `scripts/payload.py` - ensemble, tracking, movement, geolocation |
+| Frame acquisition    | Implemented | `scripts/payload.py`                               |
 | RGB detector         | Implemented | MT-004, YOLO26n @ 1280 px, VisDrone Person         |
 | Thermal detector     | Implemented | MT-005, YOLO26n @ 640 px, HIT-UAV Person           |
 | Confidence filtering | Implemented | Operational threshold 0.25                         |
-| Tracking             | Implemented | ByteTrack via Ultralytics, persistent IDs          |
+| Tracking             | Implemented | ByteTrack driven directly, so it accepts fused boxes |
 | Ego-motion estimate  | Implemented | LK optical flow + partial affine, RANSAC           |
 | Movement classifier  | Implemented | World-frame displacement over a sliding window     |
 | Detection output     | Implemented | Annotated video + JSONL stream                     |
