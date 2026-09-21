@@ -42,6 +42,20 @@ The two-model fusion is the only configuration found that improves on the
 baseline **on every axis at once** - more people found, fewer missed, *fewer*
 false positives, higher precision. Its cost is 2x inference.
 
+### Against the published HIT-UAV baselines
+
+Same dataset, same splits - the only externally comparable numbers available:
+
+| Model | Person AP@0.50 |
+|-------|---------------:|
+| YOLOv4 (dataset paper) | 89.88% |
+| SSD-512 | 85.6% |
+| Faster-RCNN | 75.5% |
+| **MT-005 (this project)** | **93.3%** |
+
+With the caveat that this project trains person-only while the paper trains
+four classes. See [`docs/related_work.md`](docs/related_work.md).
+
 ### The evaluation criterion was stricter than the mission needs
 
 | Criterion | Box error rejected | People found | Recall |
@@ -164,6 +178,7 @@ problem**. That is why fusing two near-misses improves both columns at once.
 | [`docs/hardware_selection.md`](docs/hardware_selection.md) | Hardware trade study, every requirement measured |
 | [`docs/payload_icd.md`](docs/payload_icd.md) | Interface control document |
 | [`docs/literature_comparison.md`](docs/literature_comparison.md) | Positioning against Rizk [3] and Lygouras [4] |
+| [`docs/related_work.md`](docs/related_work.md) | HIT-UAV benchmarks, comparable systems, techniques to adopt |
 
 ---
 
