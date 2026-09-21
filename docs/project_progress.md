@@ -39,7 +39,7 @@
 |    29 | Deployment latency benchmark                              | Completed   |
 |    30 | Movement detection/tracking                               | Completed   |
 |    31 | Real-time inference pipeline                              | Completed   |
-|    32 | Model export for embedded inference (ONNX)                | Pending     |
+|    32 | Model export for embedded inference (ONNX)                | Completed   |
 |    33 | RGB/thermal model ensembling investigation                | Pending     |
 |    34 | Embedded companion-computer selection                     | Pending     |
 |    35 | Embedded model deployment/benchmarking                    | Pending     |
@@ -296,6 +296,32 @@ composited person that genuinely moves):
 
 With compensation the single flagged track matched the composited person's
 known trajectory across all 120 frames.
+
+### Model Export
+
+Both reference models were exported to ONNX and verified against the PyTorch
+models on 150 real dataset images, rather than on random tensors.
+
+Verification found that the export input shape is the critical parameter. An
+ONNX graph has one fixed input shape, while the PyTorch predict path
+letterboxes rectangularly. For MT-005 on a 640 x 512 thermal sensor:
+
+| Export shape       | Boxes      | Mean IoU | Lost detections | Verdict |
+| ------------------ | ---------- | -------- | --------------: | ------- |
+| 640 x 640 (square) | 792 -> 778 | 0.972    |              27 | FAIL    |
+| 512 x 640 (native) | 792 -> 792 | 1.000    |               0 | PASS    |
+
+The square export silently loses 3.4% of detections. The graph itself is
+faithful - raw pre-NMS outputs agree to 1.7e-06 on the confidence channel - so
+this is a preprocessing mismatch, not an export defect.
+
+MT-004 exports with some drift (mean IoU 0.955), which is expected: VisDrone
+images have mixed aspect ratios, so no single fixed shape reproduces the
+PyTorch letterbox for every image. A deployed RGB pipeline must letterbox to
+the exported shape itself.
+
+The exports are verified numerically but their latency has not yet been
+measured, because the installed ONNX Runtime has no CUDA provider.
 
 ### Latency Benchmark
 

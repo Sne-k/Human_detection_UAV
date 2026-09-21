@@ -289,10 +289,87 @@ the lever.
 
 ---
 
-## 5. Next Steps
+## 5. Model Export
 
-1. Export MT-004 and MT-005 to ONNX and re-measure, to confirm the
-   launch-bound analysis and quantify the gain.
+Implemented in [`scripts/export_models.py`](../scripts/export_models.py).
+
+Because the models are launch-bound rather than compute-bound, a fused
+exported graph is the optimisation that matters. Export is only useful if the
+exported model still detects the same people, so every export is verified
+against the PyTorch model on real dataset images.
+
+### Export shape is the critical parameter
+
+An ONNX graph has one fixed input shape. The PyTorch predict path letterboxes
+rectangularly to a stride multiple, so for a 640 x 512 thermal sensor it feeds
+the network 512 x 640. Exporting at a square 640 x 640 pads differently, which
+silently changes which marginal detections survive NMS.
+
+Measured on 150 HIT-UAV test images with MT-005:
+
+| Export shape        | Boxes      | Mean IoU | Lost detections | Verdict |
+| ------------------- | ---------- | -------- | --------------: | ------- |
+| 640 x 640 (square)  | 792 -> 778 | 0.972    |              27 | FAIL    |
+| 512 x 640 (native)  | 792 -> 792 | 1.000    |               0 | PASS    |
+
+The square export loses 3.4% of detections with no warning of any kind. Both
+exports load, run, and look correct.
+
+### The graph itself is faithful
+
+To confirm the difference is preprocessing and not a broken export, the raw
+pre-NMS tensors were compared directly, feeding both paths an identical
+manually letterboxed 640 x 640 input:
+
+| Measurement                       | Value    |
+| --------------------------------- | -------- |
+| Max absolute difference (all)     | 4.4e-03  |
+| Mean absolute difference (all)    | 5.3e-05  |
+| Max difference, confidence channel| 1.7e-06  |
+| Candidates above conf 0.25        | 176 vs 176 |
+
+The exported graph reproduces the PyTorch network. `onnxslim` simplification
+was also ruled out: exports with and without it were bit-identical in outcome.
+
+A control was also run to rule out ordinary numeric noise. PyTorch on CPU
+versus PyTorch on GPU, same weights and images, gives mean IoU 0.99911 and zero
+box-count drift - so the square-export drift is real, not float jitter.
+
+### Results
+
+| Model  | Modality | Export shape | Size    | Boxes        | Mean IoU | Verdict |
+| ------ | -------- | ------------ | ------- | ------------ | -------- | ------- |
+| MT-005 | Thermal  | 512 x 640    | 9.31 MB | 792 -> 792   | 1.000    | PASS    |
+| MT-004 | RGB      | 1280 x 1280  | 9.82 MB | 3225 -> 3251 | 0.955    | FAIL    |
+
+MT-005 exports exactly, with zero confidence delta.
+
+MT-004 does not, and this is expected rather than a defect. VisDrone images
+have mixed aspect ratios, so no single fixed input shape can reproduce the
+PyTorch rectangular letterbox for every image. The consequence for deployment
+is that an RGB pipeline must letterbox to the exported shape itself rather than
+relying on a framework predict path that silently chooses a different one.
+Since the deployed pipeline will drive a fixed-resolution camera, that is a
+constraint to honour at integration time, not a blocker.
+
+### Caveats
+
+- Exports were verified on CPU ONNX Runtime, because the installed runtime has
+  no CUDA provider. Verification checks numerical equivalence, which is
+  provider-independent; it does not measure exported latency.
+- The predicted speedup from removing launch overhead has **not** yet been
+  measured. That requires a GPU execution provider or TensorRT on the target,
+  and remains outstanding.
+- INT8 quantisation has not been attempted. It would change the numbers above
+  and requires its own verification pass.
+
+---
+
+## 6. Next Steps
+
+1. Measure exported-model latency with a GPU execution provider or TensorRT,
+   to confirm the launch-bound analysis and quantify the actual gain. The
+   export is verified numerically but its speed is still unmeasured.
 2. Validate tracking and movement detection on real UAV video, including
    identity-stability measurement against ground truth.
 3. Re-run both benchmarks on candidate companion computers.
