@@ -179,6 +179,7 @@ problem**. That is why fusing two near-misses improves both columns at once.
 | [`docs/payload_icd.md`](docs/payload_icd.md) | Interface control document |
 | [`docs/literature_comparison.md`](docs/literature_comparison.md) | Positioning against Rizk [3] and Lygouras [4] |
 | [`docs/related_work.md`](docs/related_work.md) | HIT-UAV benchmarks, comparable systems, techniques to adopt |
+| [`docs/references.md`](docs/references.md) | Every source, tagged by provenance: local papers, online papers, code, datasets, tools |
 
 ---
 

@@ -88,5 +88,6 @@ python scripts/coverage_requirements.py
 | `docs/hardware_selection.md` | Hardware trade study |
 | `docs/payload_icd.md` | Interface control document |
 | `docs/literature_comparison.md` | Positioning against the reference systems |
+| `docs/references.md` | Every source, tagged by provenance |
 | `docs/system_architecture.md` | Architecture and design decisions |
 | `docs/project_progress.md` | Stage-by-stage progress |
