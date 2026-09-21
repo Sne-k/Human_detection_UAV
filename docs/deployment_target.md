@@ -358,14 +358,35 @@ never moved.
 | ---------------------------- | ----------------------------------------- | ---- |
 | Keep MT-005 at 640, CPU only | 5-9 FPS, no extra hardware                | None |
 | Add an AI accelerator (Hailo)| Large speedup, enables ensemble           | Adds cost |
-| INT8 quantisation            | Typically 2-3x on CPU, needs re-verification | None, but accuracy must be re-checked |
+| INT8 quantisation            | **Tried and rejected** - 1.17x, costs 406 people | Measured, see below |
 | NCNN / TFLite instead of ORT | Often faster than ORT on ARM              | Effort only |
 | Reduce input resolution      | Direct saving, costs recall               | None |
 
-INT8 quantisation is the most promising untried option, because it costs
-nothing but effort and the verification harness to check it already exists.
-It has not been attempted, and it would change the detection numbers, so it
-would need a full re-run of the accuracy comparison.
+### INT8 quantisation was tried, and rejected
+
+It was the most promising untried option on this list and it is no longer
+untried. Measured with `scripts/quantize_int8.py`:
+
+| | Dev CPU | Pi 5 estimate | Matched persons | Recall | 6.7 FPS @ 60 m |
+|---|--------:|---------------|----------------:|-------:|----------------|
+| FP32 | 41.8 ms | 4.8 - 8.0 FPS | 2,425 | 0.9288 | marginal |
+| INT8 | 35.8 ms | 5.6 - 9.3 FPS | **2,019** | **0.7733** | marginal |
+
+**1.17x, at the cost of 406 people - 16.7% of every detection the payload
+makes - and blind images rising from 8 to 23.** The deployment verdict does
+not change either: both precisions are marginal at 60 m and both clear 100 m,
+so nothing in this project would be decided differently.
+
+Two traps were found on the way and are recorded in `training_log.md` section
+35. Int8 *activations* make it 2.3x slower, because ONNX Runtime's x86 kernels
+want uint8 activations against int8 weights. And quantising the detection head
+destroys the detector silently - the classification branch rounds to exactly
+zero while box regression still looks healthy, so the model reports nothing
+while a latency benchmark on it still reports a speedup.
+
+The 1.17x is an x86 figure and the fusion diagnostic shows zero QLinearConv
+nodes, so ARM may do better on speed. It will not do better on accuracy: the
+406 people are lost before anything reaches the CPU's instruction set.
 
 ---
 
