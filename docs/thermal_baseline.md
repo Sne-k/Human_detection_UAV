@@ -118,14 +118,39 @@ the 68 that had an overlapping prediction:
 Plus 19 with no overlapping prediction at all, 57.9% of which are daylight
 images.
 
-**Reference merged-box count: 43.** This is the primary target metric for
-MT-008.
-
 Control: only **4.46%** of the 2,397 successfully detected persons involve a
 multi-person prediction box.
 
 ```bash
 python scripts/verify_crowding_hypothesis.py --conf 0.10
+```
+
+### Single-model merged-box reference
+
+The 43 above is an **intersection** figure: persons missed by MT-005 *and*
+MT-007 together, at confidence 0.10. It is not comparable to a single model's
+count, and using it as the MT-008 baseline would be an apples-to-oranges
+comparison.
+
+The self-contained per-model metric is: of the persons this model misses at
+confidence 0.25, how many have a best-overlapping prediction that spans 2+
+annotated people and is at least 1.6x the target area.
+
+| Model  | Missed | merged | undersized | offset | stolen | no_overlap |
+| ------ | -----: | -----: | ---------: | -----: | -----: | ---------: |
+| MT-005 |    186 | **57** |         33 |     12 |     19 |         65 |
+| MT-006 |    207 |     56 |         34 |      8 |     15 |         94 |
+| MT-007 |    229 |     64 |         52 |      7 |     16 |         90 |
+
+**Reference merged-box count for MT-005: 57.** This is the primary target
+metric for MT-008.
+
+Note that MT-006 (56) and MT-007 (64) sit essentially level with MT-005 (57).
+Neither higher resolution nor crop augmentation changed merged-box behaviour at
+all, which is further evidence that the mechanism is untouched by scale.
+
+```bash
+python scripts/evaluate_experiment.py --labels MT-005-test-analysis
 ```
 
 ---
@@ -171,7 +196,7 @@ Any new thermal experiment should report this table.
 | Unmatched boxes @ 0.25    | 638             | -              |
 | Custom precision @ 0.25   | 0.7917          | -              |
 | Zero-prediction images with people | 8      | -              |
-| **Merged-box failures**   | **43**          | -              |
+| **Merged-box failures**   | **57**          | -              |
 | Small-person recall       | 0.9294          | -              |
 | Forward latency (graphed) | 2.43 ms         | -              |
 
