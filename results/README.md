@@ -22,7 +22,7 @@ Datasets, model weights and generated artefacts are excluded from Git via
 | MT-009 | Thermal | 640 | HIT-UAV + hard negatives | Completed - rejected |
 | MT-010 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
 | MT-011 | Thermal | 640 | HIT-UAV Person | Completed - **accepted** |
-| MT-012 | Thermal | 640 | HIT-UAV Person | Running - P2 head |
+| MT-012 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
 | MT-013 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
 
 Training runs are written by Ultralytics under

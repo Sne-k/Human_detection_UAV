@@ -191,8 +191,17 @@ Two things are worth carrying forward from the measurement:
    breaks the budget was the one recommended on **scale** grounds - and scale
    has already been ruled out three times here.
 
-Keep P2 as a contingency if an AI accelerator is ever added. See
-`training_log.md` section 33.
+P2 was trained anyway as MT-012, to settle the contingency rather than leave
+it open. **The answer is no.** At its mission-optimal operating point it
+scores 3,746 against MT-005's 3,738 and MT-011's 3,385, and it is beaten by
+MT-011 at every miss-cost ratio from 1:1 to 100:1 - while costing 1.3-1.5x
+the compute. An accelerator bought to run it would purchase a model that a
+free one beats.
+
+It is not worthless: it produced the largest reduction in merged detections
+of any experiment, 57 to 42, which is exactly what a stride-4 grid should buy.
+It pays for that with false positives, and the arithmetic does not come out in
+its favour. See `training_log.md` sections 33 and 42.
 
 ### D. Alerting
 

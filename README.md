@@ -187,10 +187,18 @@ python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemet
 | MT-010 | Thermal | box-loss weight 15.0 | Rejected, worse on every axis |
 | MT-011 | Thermal | VisDrone -> HIT-UAV transfer | **Accepted** - better calibrated |
 | MT-013 | Thermal | NWD localisation loss | Rejected, did not move its target |
-| MT-012 | Thermal | P2 small-object head | Running, gate conditions met |
+| MT-012 | Thermal | P2 small-object head | Rejected on compute **and** accuracy |
 
-**Nine directions tested; one improved the baseline.** MT-011 is the first,
-and it was nearly missed - see below. Model capacity was ruled out on compute,
+**Eleven directions tested; one improved the baseline.** MT-011 is the only
+one, and it was nearly missed - see below.
+
+Two of those eleven were aimed squarely at the dominant measured failure,
+near-miss localisation: a P2 detection head (MT-012) and an NWD localisation
+loss (MT-013). **Both produced a near-miss gap of 76 against the baseline's
+75.** MT-011, aimed at nothing of the kind, produced 64. Two independent
+approaches converging on the same non-result says the near-miss population is
+limited by neither grid resolution nor loss geometry - most likely by the
+IoU-based anchor assigner that runs upstream of both. Model capacity was ruled out on compute,
 not accuracy: YOLO26s runs at an estimated 1.8-2.9 FPS on the target against a
 6.7 FPS requirement.
 

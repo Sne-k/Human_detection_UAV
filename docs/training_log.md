@@ -2733,3 +2733,113 @@ aimed at is the one that worked. That is worth sitting with rather than
 explaining away: the failure analysis correctly identified *what* goes wrong,
 and has now twice been a poor guide to *what to change*. Knowing the mechanism
 of a failure is not the same as knowing its cause.
+
+---
+
+## 42. MT-012 - The P2 Head, and the Accelerator Question Answered
+
+`architecture_budget.py` vetoed the P2 small-object head for deployment before
+it was trained: 4.0-6.6 FPS against a 6.7 FPS requirement, and worse once
+section 39's pipeline overhead is included - roughly 3.4-5.7 FPS, failing
+outright. It was run anyway, because it is the single most-supported technique
+in the surveyed literature ([14]-[18]) and because one question remained that
+only training could answer:
+
+**If an accelerator were bought, would the P2 head be worth running on it?**
+
+The gate in `run_experiment_queue.py` held it until its two stated conditions
+were met - MT-011 had not itself solved the problem, and the free alternative
+(NWD) had been tried and found insufficient. Both were satisfied by section
+41, so it ran.
+
+### Result
+
+mAP@50 **0.9250** against the baseline's 0.9330. At confidence 0.25 it is
+worse on every axis, including 155 more unmatched boxes and six more blind
+images.
+
+Swept across confidence under fusion, and scored on mission cost against every
+other model:
+
+| Model | Optimal conf | Cost | People found | Unmatched | Inference cost |
+|-------|-------------:|-----:|-------------:|----------:|----------------|
+| **MT-011** | 0.05 | **3,385** | **2,492** | 1,005 | **1x** |
+| MT-013 | 0.07 | 3,686 | 2,477 | 1,006 | 1x |
+| MT-005 | 0.10 | 3,738 | 2,470 | 918 | 1x |
+| MT-012 (P2) | 0.07 | **3,746** | 2,489 | 1,306 | **1.3 - 1.5x** |
+
+| Missed-person cost | MT-005 | MT-011 | MT-012 | MT-013 | Winner |
+|-------------------:|-------:|-------:|-------:|-------:|--------|
+| 1 | 675 | **586** | 696 | 636 | MT-011 |
+| 5 | 1,414 | **1,344** | 1,464 | 1,460 | MT-011 |
+| 20 | 3,738 | **3,385** | 3,746 | 3,686 | MT-011 |
+| 50 | 7,638 | **6,955** | 7,316 | 7,670 | MT-011 |
+| 100 | 13,938 | **12,905** | 13,066 | 14,170 | MT-011 |
+
+**The P2 head is beaten by a free model at every cost ratio**, and at the
+project's stated 20:1 it is marginally worse than the unmodified baseline
+while costing 30-50% more compute.
+
+### The procurement answer
+
+**No.** An accelerator bought specifically to run the P2 head would purchase a
+model that MT-011 beats at every cost ratio, and MT-011 runs on the board that
+already exists. The accuracy case for the extra hardware does not hold.
+
+That is a cleaner answer than the compute veto alone could give. The veto said
+"this does not fit"; the measurement says "and it would not be worth the room
+even if it did."
+
+An accelerator may still be justified - it would restore the two-model
+ensemble, and it would buy frame-rate margin for movement classification. It
+is not justified by the P2 head.
+
+### What P2 actually did
+
+It is not a failure in the way MT-010 was. P2 is a **high-recall,
+low-precision** model, and it is the best in the programme at one specific
+thing:
+
+| Mechanism | MT-005 | MT-012 | Change |
+|-----------|-------:|-------:|--------|
+| merged boxes | 57 | **42** | **-15** |
+
+**The biggest reduction in merged detections of any experiment**, including
+MT-008 and MT-010 which were designed for exactly that. A stride-4 grid does
+separate adjacent people, which is precisely what the finer resolution was
+supposed to buy. At confidence 0.05 it also finds more people than any other
+model, 2,496.
+
+It simply pays for both with false positives - 1,566 at that threshold against
+MT-011's 1,005 - and the arithmetic does not come out in its favour at any
+plausible cost ratio.
+
+### Three techniques, one target, no movement
+
+The near-miss gap, matched at IoU 0.50 against IoU 0.25:
+
+| Model | IoU 0.50 | IoU 0.25 | Near-miss gap | Aimed at near-misses? |
+|-------|---------:|---------:|--------------:|-----------------------|
+| MT-005 | 2,426 | 2,501 | 75 | - |
+| MT-011 | 2,420 | 2,484 | **64** | **No** |
+| MT-012 (P2) | 2,419 | 2,495 | 76 | Yes |
+| MT-013 (NWD) | 2,405 | 2,481 | 76 | Yes |
+
+**Both techniques chosen to fix near-miss localisation produced a gap of 76.
+The one aimed at nothing of the kind produced 64.**
+
+Two independent approaches - more spatial resolution, and a smoother
+localisation loss - converged on exactly the same non-result. That is no
+longer a coincidence to be explained away per-experiment. It says the
+near-miss population is not limited by grid resolution or by loss geometry.
+
+Section 41 offered the likely reason for NWD specifically: the assigner still
+selects anchors by IoU, so the boxes that fail on tiny targets are never
+supervised. That explanation covers P2 as well - a finer grid supplies more
+candidate anchors, but the same IoU-based assigner decides which of them are
+eligible. **Both changes were applied downstream of the decision that actually
+excludes the near-misses.**
+
+That makes NWD-in-the-assigner the one remaining well-motivated experiment,
+and it also predicts what would happen without it: nothing, twice over, which
+is what was measured.
