@@ -106,6 +106,24 @@ MT012 = {
 
 MT005_BASELINE = {"map50": 0.9330, "recall": 0.9288}
 
+# A seed repeat of the one experiment that beat the baseline. MT-011 is now a
+# deployment recommendation resting on a single training run, and its margin
+# is 2,492 people against 2,470. Everything is identical except the seed, so
+# the difference between MT-011 and MT-011b is run-to-run variation - the
+# noise floor against which every other result in this project should be read.
+MT011B = {
+    "name": "MT-011b",
+    "hypothesis": (
+        "Seed repeat of MT-011. Measures how much of the accepted result is "
+        "the change under test and how much is run-to-run variation"
+    ),
+    "train": [
+        "--mosaic", "1.0",
+        "--model", str(TRAINING_ROOT / "MT-004" / "weights" / "best.pt"),
+        "--seed", "1",
+    ],
+}
+
 
 def mt012_gate(summaries, stream):
     """
@@ -359,7 +377,7 @@ def main():
     if args.only:
         # MT-012 is held outside QUEUE behind its gate, but naming it
         # explicitly is a deliberate override of that gate.
-        queue = [e for e in (QUEUE + [MT012]) if e["name"] in args.only]
+        queue = [e for e in (QUEUE + [MT012, MT011B]) if e["name"] in args.only]
 
     summaries = []
 

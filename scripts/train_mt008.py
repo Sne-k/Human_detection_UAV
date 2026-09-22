@@ -150,6 +150,15 @@ def main():
         help="NWD distance scale in image pixels. Defaults to the measured "
              "mean object size of the HIT-UAV train split.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Training seed. MT-005 and every experiment since used 0. A "
+             "different seed with everything else identical measures how much "
+             "of a result is run-to-run variation rather than the change "
+             "under test.",
+    )
     parser.add_argument("--resume", action="store_true")
 
     args = parser.parse_args()
@@ -164,6 +173,9 @@ def main():
 
     if args.model is not None:
         config["model"] = args.model
+
+    if args.seed is not None:
+        config["seed"] = args.seed
 
     if args.box is not None:
         config["box"] = args.box
@@ -189,6 +201,9 @@ def main():
 
     if args.transfer is not None:
         print(f"transfer:{args.transfer}  -> into the architecture above")
+
+    if args.seed is not None:
+        print(f"seed:    {args.seed}  (every run so far used 0)")
 
     if args.nwd is not None:
         print(f"nwd:     {args.nwd}  (MT-005 used pure CIoU)")

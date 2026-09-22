@@ -2715,10 +2715,13 @@ never assigned the target. The loss was made kinder to near-misses while the
 assigner kept deciding, on IoU, which predictions were near-misses worth
 training at all.
 
-That leaves a specific, testable follow-up: **NWD in the assigner**, not only
-in the loss. It remains free at inference. It is more invasive than a loss
-patch, because the assigner also drives the classification target, so it is
-recorded here as the next thing to try rather than attempted immediately.
+That suggested a specific follow-up: **NWD in the assigner**, not only in the
+loss.
+
+**That follow-up was measured and ruled out before it was run - see section
+43.** The reasoning above is wrong: the assigner is not rejecting anchors on
+IoU grounds, because for targets this size it has almost nothing to reject.
+The paragraph is left as written rather than quietly deleted.
 
 ### What the three results say together
 
@@ -2833,13 +2836,114 @@ localisation loss - converged on exactly the same non-result. That is no
 longer a coincidence to be explained away per-experiment. It says the
 near-miss population is not limited by grid resolution or by loss geometry.
 
-Section 41 offered the likely reason for NWD specifically: the assigner still
+Section 41 offered a reason for NWD specifically: that the assigner still
 selects anchors by IoU, so the boxes that fail on tiny targets are never
-supervised. That explanation covers P2 as well - a finer grid supplies more
-candidate anchors, but the same IoU-based assigner decides which of them are
-eligible. **Both changes were applied downstream of the decision that actually
-excludes the near-misses.**
+supervised, and that the same explanation covers P2. **That hypothesis was
+wrong, and section 43 measures why.** It is left standing above as written,
+because a corrected record is more useful than a tidy one.
 
-That makes NWD-in-the-assigner the one remaining well-motivated experiment,
-and it also predicts what would happen without it: nothing, twice over, which
-is what was measured.
+---
+
+## 43. The Assigner Hypothesis Was Wrong - Measured, Not Argued
+
+Sections 41 and 42 proposed that the reason two well-motivated techniques both
+failed to move near-miss localisation was the anchor assigner: that
+Ultralytics selects which anchors are responsible for a ground-truth box using
+IoU, so on a 12 x 19 px person the near-miss anchors are excluded from
+supervision before any loss is evaluated. That would explain both failures at
+once, and it pointed at NWD-in-the-assigner as the next experiment.
+
+Before spending a training run on it, the claim was checked against the code
+and then against the data. **It does not survive either.**
+
+### What the assigner actually does
+
+`TaskAlignedAssigner.get_pos_mask` builds its positive mask as
+
+    mask_pos = mask_topk * mask_in_gts * mask_gt
+
+Three conditions, and only one of them involves a metric:
+
+| Condition | What it tests | Metric-based? |
+|-----------|---------------|---------------|
+| `mask_in_gts` | The anchor centre **falls inside the box** | **No - pure geometry** |
+| `mask_topk` | Among the top `k` by alignment score | Yes, IoU-weighted |
+| `mask_gt` | The ground-truth entry is real, not padding | No |
+
+`mask_in_gts` is a hard geometric filter applied *before* any ranking. An
+anchor whose centre lies outside the box can never be assigned, and no
+similarity metric changes that.
+
+### The measurement that settles it
+
+Counting, for all 8,533 boxes in the HIT-UAV train split at the deployment
+input of 512 x 640, how many anchor centres actually fall inside each box:
+
+| Stride | Level | Mean anchors per box | Median | Boxes with zero |
+|-------:|-------|---------------------:|-------:|----------------:|
+| 8 | P3 | 4.52 | 4 | 2.2% |
+| 16 | P4 | 1.16 | 1 | 23.0% |
+| 32 | P5 | 0.28 | 0 | 72.2% |
+| | **Total pool** | **~5.96** | | 1.0% across all three |
+
+The `topk` used in training is **10**.
+
+**The candidate pool averages about six and the selection keeps ten.** For a
+typical HIT-UAV person the top-k stage is not binding at all - every
+geometrically eligible anchor is already selected. There is nothing for a
+better ranking metric to rescue, because nothing is being ranked away.
+
+NWD in `iou_calculation` would still alter the *alignment score*, which
+weights the classification target through `target_scores *= norm_align_metric`.
+That is a second-order effect on supervision strength, not on selection - and
+MT-013 already changed the box loss for exactly those anchors to no
+measurable effect.
+
+### And the real bottleneck was already tested
+
+The binding constraint is anchor density, not the metric. The correct fix for
+that is a finer grid, and at stride 4 a P2 head gives **17.73 anchors per box
+against P3 4.52 - a four-fold larger pool.**
+
+That is MT-012. It was run, and the near-miss gap was 76 against the
+baseline 75.
+
+| Proposed cause of the near-miss population | Status |
+|--------------------------------------------|--------|
+| Loss geometry - IoU collapses on tiny boxes | Tested, MT-013: no effect |
+| Anchor density - too few eligible anchors | Tested, MT-012: 4x the pool, no effect |
+| Assigner metric - IoU rejects near-misses | **Ruled out by measurement: it rejects almost nothing** |
+
+All three candidate explanations are now closed, two by experiment and one by
+measurement. **NWD-in-the-assigner is not the most justified remaining
+experiment; it is the least.** It addresses a mechanism the data says is not
+operating.
+
+### What this implies about the remaining 75
+
+Seventy-five near-miss boxes is 2.9% of the 2,611 persons in the test split.
+Two independent, well-motivated interventions failed to move them, and the
+third explanation is measurably absent.
+
+The most likely remaining accounts are not model deficiencies at all:
+annotation ambiguity on targets 12 x 19 px, and the sensor resolution limit,
+where the true extent of a person is genuinely uncertain to within a pixel or
+two. `sensor_resolution_study.py` already showed how steeply performance
+depends on pixels-on-target.
+
+That is a defensible place to stop. **The detector line of inquiry is
+exhausted**, and the binding gap in this project has not been detection
+accuracy for some time - it is that nothing has flown.
+
+### On checking before running
+
+This cost one code reading and one counting script, perhaps twenty minutes,
+and it replaced a ninety-minute training run whose result was already
+determined. It is the same move as `architecture_budget.py` in section 33,
+applied to a hypothesis rather than to an architecture: **establish what a run
+can possibly tell you before spending the GPU on it.**
+
+It also corrects a mistake already committed to this log. The assigner
+explanation was written confidently in two sections and it was wrong. It
+stands there still, flagged, because a record that shows where the reasoning
+went astray is worth more than one that reads as though it never did.
