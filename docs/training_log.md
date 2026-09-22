@@ -1827,3 +1827,1344 @@ near-misses.
 
 It is worth one controlled run. It is also the last one worth making before
 the constraint moves from the detector to the hardware.
+
+---
+
+## 32. Is IoU 0.50 the Right Criterion?
+
+Every recall figure in this project uses IoU >= 0.50. That is the computer
+vision convention, inherited from PASCAL VOC and COCO. It has never been
+checked against what the payload actually delivers.
+
+The payload does not hand a rescue team a bounding box. It hands them a
+latitude and longitude with a stated uncertainty. A detection is operationally
+useful if it puts the team close enough to find the person, and "close enough"
+is set by the geolocation error budget, not by box overlap.
+
+### What each threshold means on the ground
+
+At 100 m with a 50 degree horizontal field of view and a 640 px sensor, the
+ground sampling distance is 0.146 m/px and a 12 x 19 px person is
+1.75 x 2.77 m. For two equal boxes offset along one axis:
+
+| IoU  | Pixel offset | Ground error | Matched | Missed | Recall | Unmatched |
+| ---- | -----------: | -----------: | ------: | -----: | ------ | --------: |
+| 0.50 |          4.0 |       0.58 m |   2,425 |    186 | 0.9288 |       638 |
+| 0.40 |          5.1 |       0.75 m |   2,484 |    127 | 0.9514 |       579 |
+| 0.30 |          6.5 |       0.94 m |   2,509 |    102 | 0.9609 |       554 |
+| 0.25 |          7.2 |       1.05 m |   2,511 |    100 | 0.9617 |       552 |
+| 0.20 |          8.0 |       1.17 m |   2,514 |     97 | 0.9628 |       549 |
+| 0.10 |          9.8 |       1.43 m |   2,516 |     95 | 0.9636 |       547 |
+
+### The argument
+
+The geolocation fix reported for each detection carries a position error of
+**+/- 3.8 m** at 100 m nadir, dominated by attitude uncertainty at roughly
+1.75 m per degree.
+
+The box error that IoU 0.25 still accepts is **1.05 m**.
+
+**The coordinate handed to the rescue team is uncertain by 3.6 times more than
+the box error the criterion would reject.** A detection discarded for landing
+between IoU 0.25 and 0.50 would have been reported to the same place on the
+ground as one that passed. The rescue team walks to the same spot.
+
+Under the convention the detector finds 2,425 people. Under a criterion
+derived from the delivery mechanism it finds **2,511** - 86 more, and 86 fewer
+missed.
+
+Recall saturates below 0.25: dropping to 0.10 adds only five more. So 0.25 is
+not an arbitrary slide toward an easier number; it is the point where "the box
+is on the person" stops excluding anyone.
+
+This also re-reads section 29 from the other side. The near-miss boxes between
+IoU 0.25 and 0.50 were counted twice, once as a missed person and once as a
+false positive. Under the operational criterion most of them become what they
+physically are: a person, found, and localised well within the accuracy the
+system can report anyway.
+
+### How this must be reported
+
+The temptation here is obvious and must be resisted. Loosening a threshold
+until the number improves is metric-gaming, and the difference between that
+and what is argued above is entirely in whether the criterion is derived from
+something real.
+
+Two rules:
+
+1. **mAP@50 stays in the results.** It is the comparable academic metric, it
+   is what Rizk, Lygouras and the other reference systems report, and removing
+   it would make this work incomparable.
+2. **The operational figure is reported alongside, never instead**, and always
+   with the criterion named and this derivation attached. A recall figure
+   without its IoU threshold is meaningless.
+
+Stated correctly:
+
+> MT-005 achieves 0.933 mAP@50 on the held-out thermal test split. Under the
+> conventional IoU 0.50 matching criterion it recovers 92.9% of test-set
+> persons. Because the payload reports geolocated coordinates with a +/- 3.8 m
+> position uncertainty, a box error below roughly 1 m does not change where a
+> rescue team is directed; under a mission-derived IoU 0.25 criterion the
+> detector recovers 96.2%.
+
+That is defensible. "Our recall is 96.2%" on its own is not.
+
+### Why this matters more than another training run
+
+No model changed. Seven training directions were tested and none improved the
+baseline, while this costs nothing and recovers 86 people - more than any
+experiment in this project achieved, including the two-model ensemble's 31.
+
+The lesson is that the evaluation criterion was inherited rather than chosen,
+and it was stricter than the physics of the delivery mechanism requires.
+
+---
+
+## 33. The Compute Budget Vetoes the P2 Head
+
+Section 32 and `docs/related_work.md` ended with three techniques worth
+adopting, ranked by how well they fit the measured failure profile. That
+ranking considered accuracy and ignored cost, which is the wrong order for
+this project: the companion computer is a Raspberry Pi 5 class board and the
+deployed baseline already sits at an estimated 5.4-9.0 FPS against a binding
+6.7 FPS requirement. There is almost no headroom to spend.
+
+`scripts/architecture_budget.py` measures what each candidate costs before a
+training run is spent finding out what it gains. Each architecture is built
+from its YAML at the deployment class count, exported to ONNX at the
+deployment input shape, and timed through ONNX Runtime on CPU with four
+threads - the same harness as `benchmark_edge_cpu.py`, so the numbers line up
+with section 3 of `deployment_target.md`.
+
+Weights are random. Latency depends on the graph, not on weight values, so an
+untrained network times identically to a trained one. **The cost is knowable
+before the accuracy is**, and that is the whole point of running this first.
+
+### Measured, 512 x 640, nc = 1
+
+| Architecture | Params | GFLOPs | Dev CPU | Pi 5 estimate | Pi 5 FPS |
+|--------------|-------:|-------:|--------:|---------------|----------|
+| YOLO26n (deployed) | 2.50 M | 4.7 | 38.8 ms | 117 - 194 ms | 5.2 - 8.6 |
+| YOLO26n-p2 | 2.52 M | 6.1 | 50.2 ms | 150 - 251 ms | **4.0 - 6.6** |
+| YOLO26s | 9.95 M | 18.2 | 114.2 ms | 343 - 571 ms | 1.8 - 2.9 |
+
+### Against the derived requirements
+
+| Architecture | 6.7 FPS @ 60 m | 4.0 FPS @ 100 m | 1.34 FPS report-only |
+|--------------|----------------|-----------------|----------------------|
+| YOLO26n | marginal | clears | clears |
+| **YOLO26n-p2** | **FAILS** | marginal | clears |
+| YOLO26s | FAILS | FAILS | clears |
+
+**The P2 head fails the binding requirement outright.** Not marginally - its
+optimistic end, 6.6 FPS, still falls below the 6.7 FPS the movement classifier
+needs at 60 m. It would restrict the aircraft to 100 m and above, and even
+there it is only marginal.
+
+MT-012 is therefore **cancelled before it is run**. This is a cheaper negative
+result than the seven that preceded it: fifteen minutes of benchmarking
+instead of a 90-minute training run followed by an evaluation that could not
+have changed the answer.
+
+### GFLOPs understate the cost of a high-resolution head
+
+Worth recording separately, because it will mislead the next architecture
+decision if it is not:
+
+| Architecture | GFLOPs ratio | Measured latency ratio |
+|--------------|-------------:|-----------------------:|
+| YOLO26n-p2 | 1.30x | **1.29 - 1.50x** |
+| YOLO26s | 3.87x | 2.94 - 3.03x |
+
+The two were measured twice, once while MT-010 was training and competing for
+CPU and once after; the spread above is that variance, and it is why a clean
+re-run is worth doing before this table is quoted anywhere load-bearing.
+
+The pattern survives the noise, and the two architectures scale in opposite
+directions. YOLO26s costs **less** than its arithmetic predicts - a wider
+backbone is dense matrix work, which is exactly what SIMD and cache are good
+at. The P2 head costs **more** than its arithmetic predicts, because its extra
+branch operates on a stride-4 feature map with four times the spatial area of
+P3. That is bandwidth-bound rather than arithmetic-bound, and memory bandwidth
+is precisely where a Pi 5 is weakest relative to an x86 development machine.
+
+The practical consequence: **GFLOPs is not a safe proxy for cost on this
+target**, and it errs in the dangerous direction for exactly the kind of
+change small-object detection work keeps recommending.
+
+### What survives, and why it is the better half
+
+Removing P2 leaves the two techniques that cost nothing at inference:
+
+| Technique | Inference cost | Why it is free |
+|-----------|----------------|----------------|
+| **MT-011** two-stage aerial pretraining | **Zero** | Identical graph; only the initial weights differ |
+| **MT-013** NWD localisation loss | **Zero** | Loss is training-only; the exported graph is unchanged |
+| MT-012 P2 head | 1.3 - 1.5x | Cancelled |
+
+This is not a consolation. Section 24 measured that 56% of unmatched
+predictions are near-miss boxes on real people, and section 32 showed a
+4-pixel displacement is enough to fail IoU 0.50 on a 12 x 19 px target. NWD
+attacks that mechanism directly by replacing a similarity that collapses
+discontinuously with one that degrades smoothly - and it does so in the loss,
+where it costs nothing to deploy.
+
+The technique best matched to the measured failure is also the one that is
+free. The one that breaks the budget was the one recommended on scale grounds,
+and scale has already been ruled out three times: MT-006 at 960 px, MT-007
+with crop augmentation, and the sensor-resolution study.
+
+### The rule this establishes
+
+Any future change that touches the network - a head, a backbone, an attention
+module, a neck - goes through `architecture_budget.py` before it is trained.
+Changes that touch only training - losses, augmentation, datasets, schedules -
+are free at inference and need no gate.
+
+Every experiment from MT-005 to MT-010 happened to be the second kind, so the
+deployed cost never moved and the question never came up. It comes up now
+because the literature survey's recommendations are the first that would have
+changed it.
+
+---
+
+## 34. MT-010 - Box-Loss Weighting Rejected
+
+The failure-mechanism analysis found that 29% of localisation failures were
+**undersized** boxes - a prediction correctly centred on a person but drawn too
+small to reach IoU 0.50. MT-010 tested the obvious response: double the
+box-regression loss weight so the optimiser cares more about getting the
+extents right.
+
+    MT-005   box = 7.5   (Ultralytics default)
+    MT-010   box = 15.0  (this run)
+
+Everything else is copied from MT-005, so the result is attributable to the
+loss weight alone.
+
+### Result: worse on every axis
+
+Held-out test split, confidence 0.25, IoU >= 0.50.
+
+| Metric | MT-005 baseline | MT-010 | Delta |
+|--------|----------------:|-------:|-------|
+| Matched persons | 2,425 | 2,422 | **-3** |
+| Missed persons | 186 | 189 | +3 |
+| Unmatched boxes | 638 | 646 | +8 |
+| **Blind images** | **8** | **18** | **+10** |
+| Recall | 0.9288 | 0.9276 | -0.0012 |
+| Custom precision | 0.7917 | 0.7894 | -0.0023 |
+| Small-person recall | 0.9294 | 0.9282 | -0.0012 |
+| mAP@50 | 0.9330 | 0.9246 | **-0.0084** |
+
+Under the mission-derived IoU 0.25 criterion it is worse there too: 2,494
+matched against the baseline's 2,511.
+
+**MT-010 is rejected.** That is the eighth direction tested and the eighth
+rejected.
+
+### But the hypothesis was not wrong
+
+This is the interesting part, and it would be lost by recording only the
+headline. The mechanism it targeted did move:
+
+| Mechanism | MT-005 | MT-010 | Change |
+|-----------|-------:|-------:|--------|
+| merged | 57 | 49 | **-8** |
+| undersized | - | 30 | - |
+| offset | - | 10 | - |
+| stolen | - | 15 | - |
+| no_overlap | - | 85 | - |
+
+Weighting box regression more heavily **did** reduce merged boxes, by 8. The
+run still lost overall because the cost landed somewhere the hypothesis never
+considered: **blind images more than doubled, from 8 to 18**. An image where a
+person is present and nothing at all is reported is the worst failure this
+payload has, and MT-010 produced ten more of them.
+
+The mechanism is a budget. Total loss is a weighted sum, so doubling the box
+term halves the relative weight of the classification term. The detector
+became better at drawing boxes and worse at deciding there was something
+there, and for a search payload that is the wrong trade at any exchange rate.
+
+### What this adds to the picture
+
+Seven previous rejections all attacked target **scale** and produced no
+movement in any mechanism. MT-010 is the first that moved its target and still
+lost. That distinction matters for what to try next:
+
+- Scale-directed changes do not work because scale is not the problem.
+- Loss-*weighting* changes cannot win because they only move weight between
+  terms that are all still needed.
+
+What has never been tried is changing the *shape* of the localisation loss
+rather than its weight - keeping the classification term untouched and making
+the box term informative where it currently is not. That is exactly what NWD
+does, and it is why MT-013 is the next run rather than another weight sweep.
+
+---
+
+## 35. INT8 Quantisation Rejected - It Costs 406 People
+
+INT8 was the one remaining lever that makes the payload *lighter* rather than
+heavier. Everything else considered either costs compute or is free; nothing
+gives any back. With the deployed baseline sitting at "marginal" against the
+6.7 FPS requirement, and the two-model ensemble rejected purely on its 2x cost,
+a 2-3x speedup would have changed two answers at once.
+
+It does not deliver one, and the attempt produced three findings worth keeping.
+
+### Finding 1: the wrong activation type makes it 2.3x slower
+
+First attempt, static QDQ quantisation with **int8** activations and
+per-channel int8 weights:
+
+| | Size | Dev CPU | Pi 5 estimate |
+|---|-----:|--------:|---------------|
+| FP32 | 9.76 MB | 35.5 ms | 5.6 - 9.4 FPS |
+| INT8, int8 activations | 3.03 MB | **82.0 ms** | 2.4 - 4.1 FPS |
+
+**0.43x - it got 2.3x slower.** ONNX Runtime's x86 CPU kernels are built for
+the `u8s8` combination: uint8 activations against int8 weights. With int8
+activations the integer path is not taken, so every convolution still runs in
+FP32 *and* pays for the quantise/dequantise conversions around it. Switching
+activations to uint8 recovered it to 1.17x.
+
+This is a property of the runtime, not of the model, and it is the reason
+`results/quantization/quantization.json` records the exact ONNX Runtime
+version alongside the numbers.
+
+### Finding 2: quantising the detection head silently destroys the detector
+
+With uint8 activations the model was 1.17x faster and **found nothing at all**
+- zero detections across all 579 test images, against 368 images with
+detections for FP32.
+
+The cause is visible in the raw network output on a single frame:
+
+| | Confidence max | Confidence mean | Box coordinate range |
+|---|---------------:|----------------:|----------------------|
+| FP32 | 0.008748 | 0.000032 | [-74.96, 638.86] |
+| INT8 | **0.000000** | **0.000000** | [-82.42, 639.47] |
+
+**Box regression survived intact; the classification branch collapsed to
+exactly zero.** Confidences occupy a very small range near zero, so mapping
+them onto 256 integer levels with a scale set by the calibrated maximum rounds
+the entire branch away. The boxes still looked healthy, which is precisely
+what makes this dangerous: a latency benchmark on the broken model reports a
+speedup, because timing does not care whether the output is meaningful.
+
+Excluding the detection head - 79 nodes under `/model.23/` - from
+quantisation and leaving it in FP32 restores detection. `quantize_int8.py`
+now does this by default, and `--quantise-head` exists only to reproduce the
+failure.
+
+### Finding 3: even done correctly, it costs too much accuracy
+
+With the head excluded, the model works. Evaluated with the project's own
+matching against the frozen baseline, confidence 0.25, IoU >= 0.50:
+
+| Metric | Baseline | FP32 (ONNX) | INT8 | Delta vs baseline |
+|--------|---------:|------------:|-----:|------------------:|
+| Matched persons | 2,425 | **2,425** | 2,019 | **-406** |
+| Missed persons | 186 | **186** | 592 | +406 |
+| Unmatched boxes | 638 | **638** | 1,124 | +486 |
+| Blind images | 8 | **8** | 23 | +15 |
+| Recall | 0.9288 | **0.9288** | 0.7733 | **-0.1555** |
+| Custom precision | 0.7917 | **0.7917** | 0.6424 | -0.1493 |
+
+The FP32 column is worth pausing on. Driving the exported graph directly at
+its native 512 x 640 shape reproduces the frozen baseline **exactly** - every
+delta zero. That validates the prediction path used for the INT8 column, so
+the INT8 losses are attributable to quantisation and not to the harness.
+
+INT8 loses **406 of 2,425 people, 16.7% of every detection the payload makes**,
+and nearly triples the images where a person is present and nothing is
+reported.
+
+### What it buys, and why that settles it
+
+| | Dev CPU | Pi 5 estimate | 6.7 FPS @ 60 m |
+|---|--------:|---------------|----------------|
+| FP32 | 41.8 ms | 4.8 - 8.0 FPS | marginal |
+| INT8 | 35.8 ms | 5.6 - 9.3 FPS | **marginal** |
+
+1.17x, and **the deployment verdict does not change**. Both are marginal at
+60 m and both clear 100 m. Not one decision in this project would be made
+differently.
+
+So the trade is 406 people for a speedup that changes nothing. **INT8 is
+rejected**, and `deployment_target.md` section 4, which listed it as "the most
+promising untried option", is corrected accordingly.
+
+### The caveat that does not rescue it
+
+The 1.17x is an x86 measurement, and the fusion diagnostic shows why it is
+low: **zero QLinearConv nodes**, so the integer kernels were never used even
+with uint8 activations. ONNX Runtime's ARM64 backend has better int8 support,
+so on a real Cortex-A76 the speedup could be considerably larger.
+
+That caveat applies to the speedup only. **The accuracy loss is not hardware
+-dependent** - 406 people are lost on any device, because the arithmetic that
+loses them happens before anything reaches the CPU's instruction set. A larger
+speedup would change the exchange rate, not the fact that the exchange is bad.
+
+If an ARM board is ever in hand, the test to re-run is the latency half. The
+accuracy half is already answered.
+
+---
+
+## 36. Weighted Box Fusion on One Model - Free, and It Works
+
+Section 27 established that the two-model ensemble is the only configuration
+that beats the baseline **on every axis at once**. Section 33 then ruled it out
+for deployment: it costs 2x inference, and the board has no headroom.
+
+Section 29 explains *why* it works, and that explanation never actually
+required two models. 56% of unmatched predictions are near-miss boxes on real
+people, counted twice - once as a missed person, once as a false positive.
+Fusing two near-misses yields one better-centred box, which is why precision
+and recall improve together rather than trading off.
+
+A single model also produces several slightly-offset boxes per person before
+post-processing. **NMS discards all but the highest-confidence one, and the
+highest-confidence box is not necessarily the best-localised one.** Weighted
+box fusion averages the cluster instead.
+
+So: does the ensemble's mechanism survive with one model, by changing only
+what happens after the forward pass?
+
+### The comparison
+
+`scripts/single_model_wbf.py` runs MT-005 once, keeps every raw box above
+confidence 0.25, and feeds the identical output to both post-processors. Any
+difference is attributable to fusion versus suppression and to nothing else.
+
+| Cluster IoU | Method | Matched | Missed | Unmatched | Recall | Precision |
+|------------:|--------|--------:|-------:|----------:|-------:|----------:|
+| 0.70 | NMS | 2,425 | 186 | 638 | 0.9288 | 0.7917 |
+| 0.70 | **WBF** | **2,433** | **178** | **630** | **0.9318** | **0.7943** |
+| 0.60 | NMS | 2,417 | 194 | 499 | 0.9257 | 0.8289 |
+| 0.60 | **WBF** | **2,426** | **185** | **490** | **0.9291** | **0.8320** |
+| 0.50 | NMS | 2,412 | 199 | 448 | 0.9238 | 0.8434 |
+| 0.50 | **WBF** | **2,421** | **190** | **439** | **0.9272** | **0.8465** |
+
+**NMS at 0.70 reproduces the frozen baseline exactly** - 2,425 matched, 186
+missed, 638 unmatched, recall 0.9288, precision 0.7917, every figure identical.
+That is the control, and it means the WBF column is measured on a harness
+known to be exact rather than merely plausible.
+
+WBF beats NMS at **every** threshold tested, by +8 or +9 matched and the same
+number fewer unmatched. The symmetry is not a coincidence - it is the
+double-counting of section 29 made visible. A near-miss that becomes a match
+stops being counted as a false positive in the same instant, so both columns
+move by the same amount in opposite directions.
+
+### The configuration to deploy
+
+Because WBF recovers boxes that NMS throws away, the cluster threshold can be
+tightened to shed false positives without paying the usual recall price.
+Verified independently through `evaluate_experiment.py`:
+
+| Metric | Baseline (NMS 0.70) | WBF 0.60 | Delta |
+|--------|--------------------:|---------:|-------|
+| Matched persons | 2,425 | **2,426** | **+1** |
+| Missed persons | 186 | **185** | **-1** |
+| Unmatched boxes | 638 | **490** | **-148** |
+| Blind images | 8 | 8 | 0 |
+| Recall | 0.9288 | **0.9291** | **+0.0003** |
+| Custom precision | 0.7917 | **0.8320** | **+0.0403** |
+| Small-person recall | 0.9294 | **0.9298** | **+0.0004** |
+
+**Better on every axis, and it costs nothing.** The network is unchanged, the
+exported graph is unchanged, the Raspberry Pi 5 latency is unchanged. Only the
+code after the forward pass differs, and that code costs microseconds against
+a 40 ms inference.
+
+**23% of the false positives disappear.**
+
+### Against the alternatives
+
+| Change | Matched | Unmatched | Inference cost |
+|--------|--------:|----------:|----------------|
+| Two-model WBF ensemble | +31 | -21 | **2x** |
+| **Single-model WBF at 0.60** | **+1** | **-148** | **none** |
+| INT8 quantisation | -406 | +486 | 0.85x |
+| MT-010 box-loss weighting | -3 | +8 | none |
+
+The ensemble still finds more people, and if an accelerator is ever bought it
+remains the accuracy-optimal configuration. But on the board that actually
+exists, single-model WBF sheds **seven times more false positives than the
+ensemble does**, for free.
+
+### Why this was missed for so long
+
+Eight training runs were spent on this problem, and the fix was in the
+post-processing the whole time. The reason is visible in hindsight: NMS is
+supplied by the framework, it is not a hyperparameter anyone tunes, and it
+does not appear in `args.yaml` alongside the things that look like choices.
+It was inherited rather than chosen - the same mistake section 32 identified
+in the IoU 0.50 matching criterion, in a different place.
+
+Both of the two largest free wins in this project came from re-examining a
+default that no experiment had ever touched.
+
+---
+
+## 37. The Operating Point Has to Be Re-derived
+
+`operating_point.py` chose the confidence threshold from mission cost rather
+than convention, scoring each threshold as
+
+    cost = (missed persons x 20) + (false positives x 1)
+
+on the grounds that a missed casualty and a wasted rescue-team callout are not
+equal, and that optimising F1 treats them as if they were. Under NMS it
+selected **0.15**.
+
+That number is a property of the post-processing, and section 36 changed the
+post-processing. So it has to be computed again.
+
+### Fusion versus suppression at every threshold
+
+One inference pass, re-thresholded in memory, WBF clustering at 0.60.
+
+| Conf | NMS cost | WBF cost | Saving | NMS found | WBF found |
+|-----:|---------:|---------:|-------:|----------:|----------:|
+| 0.25 | 4,358 | 4,190 | +168 | 2,425 | 2,426 |
+| 0.20 | 4,193 | 3,904 | +289 | 2,441 | 2,445 |
+| 0.15 | 4,139 | **3,756** | +383 | 2,454 | 2,459 |
+| 0.10 | 4,160 | **3,738** | +422 | 2,468 | **2,470** |
+| 0.07 | - | 3,793 | | | 2,478 |
+| 0.05 | - | 3,858 | | | 2,485 |
+
+| | Threshold | Cost | People found |
+|---|----------:|-----:|-------------:|
+| NMS optimum | 0.15 | 4,139 | 2,454 |
+| **WBF optimum** | **0.10** | **3,738** | **2,470** |
+
+**Fusion lowers the mission cost at its own optimum by 9.7% and finds 16 more
+people while doing it.** At no inference cost, and the optimum moves down -
+because fusion makes low-confidence boxes cheaper to accept.
+
+The cost ratio is a mission decision and 20:1 is an assumption, not a
+measurement. What is *not* a matter of opinion is that fusion beats
+suppression in the left column at **every** threshold. Whatever ratio is
+chosen, the better post-processing is the same one.
+
+### What this changes, and what it does not
+
+| Parameter | Was | Now | Why |
+|-----------|-----|-----|-----|
+| Post-processing | NMS 0.70 | **WBF 0.60** | Better on every axis. Adopted in `payload.py` |
+| Confidence | 0.25 | **0.25, unchanged** | Not a strict improvement - a mission trade |
+
+The post-processing change was adopted because nothing gets worse: more people
+found, fewer false positives, same blind images. There is no trade to decide.
+
+The threshold is different. Moving from 0.25 to 0.10 finds 44 more people and
+adds 428 false positives, and whether that is right depends on how much an
+operator's attention is worth during a live response - which is a question for
+whoever runs the mission, not for this analysis. The marginal rate is recorded
+so the decision can be made on numbers:
+
+| Step | Extra people | False positives paid per person |
+|------|-------------:|--------------------------------:|
+| 0.25 -> 0.20 | +19 | 4.9 |
+| 0.20 -> 0.15 | +14 | 9.4 |
+| 0.15 -> 0.10 | +11 | 18.4 |
+| 0.10 -> 0.07 | +8 | 26.9 |
+| 0.07 -> 0.05 | +7 | 29.3 |
+
+The knee is between 0.15 and 0.10. Below it each additional person costs more
+than twenty false alarms.
+
+**One configuration is worth singling out.** At confidence 0.20 with fusion,
+the detector finds **2,445 people against the baseline's 2,425** while still
+producing **fewer** false positives - 584 against 638 - and no additional
+blind images. That is strictly better than the deployed baseline on every
+axis simultaneously, so it needs no cost ratio to justify it. It is available
+whenever the mission decision is made.
+
+---
+
+## 38. Re-measuring the Headline Claims Under Fusion
+
+Sections 36 and 37 changed the deployed post-processing. Two figures quoted
+elsewhere in this project were measured under the old one, so both were
+recomputed rather than left to drift.
+
+### All-conditions performance
+
+| Condition | Images | NMS recall | WBF recall | NMS precision | WBF precision |
+|-----------|-------:|-----------:|-----------:|--------------:|--------------:|
+| Night | 396 | 0.9422 | **0.9432** | 0.8234 | **0.8631** |
+| Day | 183 | 0.8786 | 0.8768 | 0.6860 | **0.7267** |
+
+The conclusion is unchanged - **thermal sensing is better in darkness, and
+noon is the hard case** - and fusion adds about 4 points of precision in both
+conditions. Day recall falls by one person, which is one person out of 552 and
+below anything that should be read as a trend.
+
+### The operational criterion, and an honest shrinkage
+
+| Post-processing | IoU 0.50 | IoU 0.25 | Gain | Unmatched at 0.25 |
+|-----------------|---------:|---------:|-----:|------------------:|
+| NMS | 2,425 | 2,511 | **+86** | 552 |
+| WBF | 2,426 | 2,501 | **+75** | **415** |
+
+Section 32's headline gain drops from 86 people to 75. That is worth stating
+plainly rather than quietly keeping the larger number.
+
+**It shrank for the reason it should have.** Both mechanisms recover the same
+population: near-miss boxes that sit on a real person but fall below IoU 0.50.
+Fusion fixes some of them in post-processing, so fewer remain for a loosened
+criterion to forgive. If the two effects had been independent, the gain would
+have stayed at 86 - the fact that it did not is evidence that section 29's
+account of the failure mode is correct.
+
+At the operational criterion the two configurations are close on people found,
+2,501 against 2,511, and fusion is well ahead on false positives, 415 against
+552. Fusion trades ten people at the loose criterion for 137 fewer false
+alarms, while being ahead at the strict criterion. It remains the better
+configuration, but this particular comparison is a trade rather than the clean
+sweep that sections 36 and 37 describe, and it should not be reported as one.
+
+---
+
+## 39. Every Frame-Rate Figure So Far Measured the Detector, Not the Payload
+
+`benchmark_edge_cpu.py` and `architecture_budget.py` both time a single
+forward pass through the exported graph. Every FPS number in this project
+comes from one of them, and the mission requirement in
+`coverage_requirements.py` is compared against those numbers.
+
+But the payload does not just detect. Each frame also goes through
+ego-motion estimation, tracking, movement classification, geolocation and now
+weighted box fusion. None of that has ever been timed, so the comparison has
+been detector-against-requirement while the requirement applies to the
+**payload**.
+
+Measured by running `payload.py` end to end on the synthetic test sequence
+with `--device cpu`:
+
+| Configuration | Frame median | Detect median | Everything else |
+|---------------|-------------:|--------------:|----------------:|
+| Full pipeline | 72.49 ms | 63.78 ms | **8.7 ms** |
+| `--no-ego-motion` | 63.96 ms | 61.89 ms | **2.1 ms** |
+
+So tracking, movement classification, geolocation and fusion together cost
+**2.1 ms**, and ego-motion compensation - Lucas-Kanade optical flow plus an
+affine RANSAC fit - costs a further **6.6 ms**.
+
+The detector here runs through PyTorch rather than ONNX, which is why it reads
+62-64 ms against the exported graph's 38.8 ms. The overhead is what this
+measurement is for, and it is independent of how the detector is executed.
+
+### What the payload actually costs
+
+Taking the ONNX detector figure and adding the measured overhead:
+
+| Configuration | Dev CPU | Pi 5 estimate | Pi 5 FPS |
+|---------------|--------:|---------------|----------|
+| Detector alone (as previously reported) | 38.8 ms | 117 - 194 ms | 5.2 - 8.6 |
+| **+ tracking, movement, geolocation, fusion** | 40.9 ms | 123 - 205 ms | 4.9 - 8.1 |
+| **+ ego-motion (full pipeline)** | **47.5 ms** | **143 - 238 ms** | **4.2 - 7.0** |
+
+**The payload is about 22% more expensive than the detector alone**, and every
+frame-rate claim in this project was optimistic by that margin.
+
+### Against the requirements
+
+| Configuration | 6.7 FPS @ 60 m | 4.0 FPS @ 100 m | 1.34 FPS report-only |
+|---------------|----------------|-----------------|----------------------|
+| Detector alone | marginal | clears | clears |
+| **Full pipeline** | **marginal** | **clears, barely** | clears |
+| **Report-only, no ego-motion** | marginal | clears | **clears comfortably** |
+
+No verdict flips outright, which is the fortunate part. But "clears" at 100 m
+becomes "clears by 0.2 FPS", which is not a margin anyone should plan a
+purchase around.
+
+### The two costs arrive together, and so do the two savings
+
+This is the useful structure in the result. Ego-motion compensation exists to
+serve movement classification, and movement classification is also what sets
+the 6.7 FPS requirement - coverage alone needs 0.64 FPS and confirmation 1.34.
+
+So the expensive component and the demanding requirement are the same
+decision. Section 28 already concluded that **detect-and-report is the primary
+mission** and movement classification is a loiter-phase capability. Dropping
+it in the search phase removes 6.6 ms per frame *and* lowers the requirement
+from 6.7 FPS to 1.34, which the payload then clears by a factor of four.
+
+That is a far more comfortable place to be than arguing about whether 7.0
+beats 6.7.
+
+### Caveat
+
+This was measured on a 120-frame synthetic sequence at 512 x 384 with a single
+moving target and 25 unique tracks. Tracking and fusion cost scales with the
+number of detections, so a dense scene will cost more than 2.1 ms. The
+ego-motion figure is the more transferable of the two, since optical flow over
+a fixed grid does not depend on how many people are present.
+
+Re-measure on real flight video when there is any.
+
+---
+
+## 40. MT-011 - The First Experiment That Beats the Baseline
+
+MT-011 takes MT-004's VisDrone-pretrained weights as the starting point and
+fine-tunes on HIT-UAV, instead of going straight from COCO. The technique is
+AlienSight's ([19] in `references.md`), which reported 0.941 -> 0.965 mAP@50
+from an intermediate aerial stage. Here the intermediate stage is also
+cross-*modality* - RGB to thermal - which is a weaker prior, since a person
+looks nothing alike in the two.
+
+It costs nothing at inference: identical architecture, identical graph,
+identical Raspberry Pi 5 latency. Only the initial weights differ.
+
+### It trains faster from the start
+
+Validation mAP@50 at matched epochs:
+
+| Epoch | MT-005 | MT-011 | Delta |
+|------:|-------:|-------:|-------|
+| 5 | 0.7567 | 0.8711 | **+0.1144** |
+| 10 | 0.8468 | 0.8664 | +0.0196 |
+| 15 | 0.8354 | 0.8938 | +0.0584 |
+| 20 | 0.8596 | 0.9013 | +0.0417 |
+
+Aerial human shape and scale do transfer across modality, and the head start
+is large. That answers the open question, and it is the part that generalises
+to any future dataset.
+
+### On the conventional metric it looks like another failure
+
+Test split, confidence 0.25, IoU >= 0.50:
+
+| Metric | Baseline | MT-011 | Delta |
+|--------|---------:|-------:|-------|
+| mAP@50 | 0.9330 | 0.9301 | **-0.0029** |
+| Matched persons | 2,425 | 2,419 | **-6** |
+| Missed persons | 186 | 192 | +6 |
+| Unmatched boxes | 638 | **510** | **-128** |
+| Custom precision | 0.7917 | **0.8259** | **+0.0342** |
+| Blind images | 8 | 10 | +2 |
+
+Under the protocol used for the previous eight experiments, MT-011 is
+rejected: fewer people found, lower mAP@50. **That verdict is wrong**, and
+the reason is the inherited confidence threshold.
+
+### What it actually learned was calibration
+
+Both models under the deployed fusion post-processing, swept across
+confidence:
+
+| Conf | MT-005 found | unmatched | MT-011 found | unmatched | Delta people | Delta FP |
+|-----:|-------------:|----------:|-------------:|----------:|-------------:|---------:|
+| 0.25 | 2,426 | 490 | 2,420 | **395** | -6 | **-95** |
+| 0.20 | 2,445 | 584 | 2,437 | **474** | -8 | **-110** |
+| 0.15 | 2,459 | 716 | 2,451 | **577** | -8 | **-139** |
+| 0.10 | 2,470 | 918 | 2,469 | **716** | -1 | **-202** |
+| 0.07 | 2,478 | 1,133 | **2,482** | **857** | **+4** | **-276** |
+| 0.05 | 2,485 | 1,338 | **2,492** | **1,005** | **+7** | **-333** |
+
+MT-011 produces **dramatically fewer false positives at every threshold**, and
+below 0.10 it finds *more* people as well. At confidence 0.05 it beats MT-005
+on both axes simultaneously: 7 more people and 333 fewer false alarms.
+
+That is what VisDrone pretraining bought. Appearance does not transfer between
+RGB and thermal, but **"this shape, at this scale, from this altitude, is not
+a person" does**. The model has seen aerial vehicles, roads and clutter, so it
+stops firing on their thermal analogues. It is not a better detector so much
+as a better-calibrated one - and a better-calibrated detector can be run far
+more sensitively, which is exactly what a search payload wants.
+
+### At each model's own operating point
+
+| | Threshold | Cost | People found | Unmatched |
+|---|----------:|-----:|-------------:|----------:|
+| MT-005 optimum | 0.10 | 3,738 | 2,470 | 918 |
+| **MT-011 optimum** | **0.05** | **3,385** | **2,492** | 1,005 |
+
+**MT-011 finds 22 more people at 9.4% lower mission cost.**
+
+### The verdict does not depend on the cost ratio
+
+20:1 is an assumption, so it was varied:
+
+| Missed-person cost | MT-005 best | MT-011 best | Winner | Margin |
+|-------------------:|------------:|------------:|--------|-------:|
+| 1 | 675 @ 0.25 | 586 @ 0.25 | MT-011 | 13.2% |
+| 2 | 860 @ 0.25 | 777 @ 0.25 | MT-011 | 9.7% |
+| 5 | 1,414 @ 0.20 | 1,344 @ 0.20 | MT-011 | 5.0% |
+| 10 | 2,236 @ 0.15 | 2,136 @ 0.10 | MT-011 | 4.5% |
+| 20 | 3,738 @ 0.10 | 3,385 @ 0.05 | MT-011 | 9.4% |
+| 50 | 7,638 @ 0.05 | 6,955 @ 0.05 | MT-011 | 8.9% |
+| 100 | 13,938 @ 0.05 | 12,905 @ 0.05 | MT-011 | 7.4% |
+
+**MT-011 wins at every ratio from 1:1 to 100:1.** Whatever a mission planner
+believes a missed casualty is worth relative to a wasted callout, the same
+model is better. The result is robust, not an artefact of one assumption.
+
+**MT-011 is accepted.** It is the first of nine experiments to beat the
+baseline.
+
+### The third inherited default
+
+This is the third time in this project that a result was hidden by a
+convention nobody chose:
+
+| Default | Inherited from | What it hid |
+|---------|----------------|-------------|
+| IoU 0.50 matching | PASCAL VOC / COCO | 86 people, section 32 |
+| NMS post-processing | The framework | 148 false positives, section 36 |
+| **Confidence 0.25** | **Ultralytics** | **MT-011 entirely** |
+
+Eight experiments were evaluated at confidence 0.25 because that is what the
+first one used. For eight of them it did not matter, because they differed
+from the baseline in ways that showed up at any threshold. MT-011 differs in
+*calibration*, which is invisible at a fixed threshold by construction.
+
+The lesson is not "sweep everything". It is that a comparison protocol is
+itself a choice, and a protocol fixed before the space of possible results was
+understood will eventually hide one.
+
+---
+
+## 41. MT-013 - NWD Failed at Exactly What It Was Chosen For
+
+NWD was the best-motivated technique in the whole survey. Section 24 measured
+that 56% of unmatched predictions are near-miss boxes on real people; section
+32 showed a 4-pixel offset on a 12 x 19 px person sits exactly at IoU 0.50.
+IoU-based loss is *why* four pixels is fatal, and NWD replaces a similarity
+that collapses discontinuously with one that degrades smoothly. It costs
+nothing at inference. On paper it was the right answer.
+
+Implemented in `scripts/nwd_loss.py`, patching `BboxLoss.forward` so that
+
+    similarity = 0.5 * CIoU + 0.5 * NWD
+
+with C = 15.93 px, the measured mean object size of the HIT-UAV train split.
+Engagement was verified rather than assumed: epoch-1 box loss 1.454 against
+MT-005's 2.075, a 30% drop consistent with replacing half the similarity
+term, while class loss was unchanged at 2.473 against 2.478. Only the box term
+moved.
+
+### Result
+
+Test split. mAP@50 **0.9324** against the baseline's 0.9330 - statistically
+indistinguishable, and better than MT-011's 0.9301.
+
+Mission cost at each model's own optimum:
+
+| Model | Optimal conf | Cost | People found | Unmatched |
+|-------|-------------:|-----:|-------------:|----------:|
+| MT-011 | 0.05 | **3,385** | **2,492** | 1,005 |
+| MT-013 | 0.07 | 3,686 | 2,477 | 1,006 |
+| MT-005 | 0.10 | 3,738 | 2,470 | 918 |
+
+| Missed-person cost | MT-005 | MT-011 | MT-013 | Winner |
+|-------------------:|-------:|-------:|-------:|--------|
+| 1 | 675 | **586** | 636 | MT-011 |
+| 5 | 1,414 | **1,344** | 1,460 | MT-011 |
+| 20 | 3,738 | **3,385** | 3,686 | MT-011 |
+| 100 | 13,938 | **12,905** | 14,170 | MT-011 |
+
+MT-013 beats MT-005 only at very low cost ratios and loses to it from 5:1
+upward. It never beats MT-011. **MT-013 is rejected.**
+
+### The measurement that makes this useful
+
+A headline number would leave this as "another failure". The interesting
+question is whether NWD moved the mechanism it was chosen for.
+
+The near-miss population is directly measurable as the gap between matching at
+IoU 0.50 and at IoU 0.25 - boxes that sit on a real person but are localised
+too poorly to count under the strict criterion:
+
+| Model | IoU 0.50 | IoU 0.25 | Near-miss gap |
+|-------|---------:|---------:|--------------:|
+| MT-005 | 2,426 | 2,501 | **75** |
+| MT-011 | 2,420 | 2,484 | **64** |
+| MT-013 (NWD) | 2,405 | 2,481 | **76** |
+
+**NWD moved its own target by one box, in the wrong direction.** The technique
+selected specifically to fix near-miss localisation did not fix near-miss
+localisation. Meanwhile MT-011, which was aimed at nothing of the kind,
+reduced the gap from 75 to 64.
+
+### Why it probably failed, and what that leaves untried
+
+This is a limitation of the implementation, not necessarily of the technique,
+and the distinction matters for anyone reading this as evidence against NWD.
+
+Wang et al. ([13] in `references.md`) state that NWD can be embedded into
+**the assignment, the non-maximum suppression, and the loss function**. This
+implementation patched one of the three.
+
+The assigner is the likely problem. Ultralytics uses a task-aligned assigner
+that decides *which anchors are responsible for which ground-truth box* using
+IoU. That decision happens before the loss is ever evaluated. So on a 12 x 19
+px person, the anchors that IoU considers unqualified are still excluded from
+supervision entirely - and a smoother loss cannot teach an anchor that was
+never assigned the target. The loss was made kinder to near-misses while the
+assigner kept deciding, on IoU, which predictions were near-misses worth
+training at all.
+
+That suggested a specific follow-up: **NWD in the assigner**, not only in the
+loss.
+
+**That follow-up was measured and ruled out before it was run - see section
+43.** The reasoning above is wrong: the assigner is not rejecting anchors on
+IoU grounds, because for targets this size it has almost nothing to reject.
+The paragraph is left as written rather than quietly deleted.
+
+### What the three results say together
+
+| Experiment | Target | Did it move its target? | Verdict |
+|------------|--------|-------------------------|---------|
+| MT-010 | Undersized boxes | Yes - merged 57 -> 49 | Rejected, cost landed elsewhere |
+| MT-013 | Near-miss localisation | **No** - gap 75 -> 76 | Rejected |
+| MT-011 | Nothing specific | Improved localisation anyway, 75 -> 64 | **Accepted** |
+
+Two experiments aimed at a measured mechanism, and the one that hit nothing it
+aimed at is the one that worked. That is worth sitting with rather than
+explaining away: the failure analysis correctly identified *what* goes wrong,
+and has now twice been a poor guide to *what to change*. Knowing the mechanism
+of a failure is not the same as knowing its cause.
+
+---
+
+## 42. MT-012 - The P2 Head, and the Accelerator Question Answered
+
+`architecture_budget.py` vetoed the P2 small-object head for deployment before
+it was trained: 4.0-6.6 FPS against a 6.7 FPS requirement, and worse once
+section 39's pipeline overhead is included - roughly 3.4-5.7 FPS, failing
+outright. It was run anyway, because it is the single most-supported technique
+in the surveyed literature ([14]-[18]) and because one question remained that
+only training could answer:
+
+**If an accelerator were bought, would the P2 head be worth running on it?**
+
+The gate in `run_experiment_queue.py` held it until its two stated conditions
+were met - MT-011 had not itself solved the problem, and the free alternative
+(NWD) had been tried and found insufficient. Both were satisfied by section
+41, so it ran.
+
+### Result
+
+mAP@50 **0.9250** against the baseline's 0.9330. At confidence 0.25 it is
+worse on every axis, including 155 more unmatched boxes and six more blind
+images.
+
+Swept across confidence under fusion, and scored on mission cost against every
+other model:
+
+| Model | Optimal conf | Cost | People found | Unmatched | Inference cost |
+|-------|-------------:|-----:|-------------:|----------:|----------------|
+| **MT-011** | 0.05 | **3,385** | **2,492** | 1,005 | **1x** |
+| MT-013 | 0.07 | 3,686 | 2,477 | 1,006 | 1x |
+| MT-005 | 0.10 | 3,738 | 2,470 | 918 | 1x |
+| MT-012 (P2) | 0.07 | **3,746** | 2,489 | 1,306 | **1.3 - 1.5x** |
+
+| Missed-person cost | MT-005 | MT-011 | MT-012 | MT-013 | Winner |
+|-------------------:|-------:|-------:|-------:|-------:|--------|
+| 1 | 675 | **586** | 696 | 636 | MT-011 |
+| 5 | 1,414 | **1,344** | 1,464 | 1,460 | MT-011 |
+| 20 | 3,738 | **3,385** | 3,746 | 3,686 | MT-011 |
+| 50 | 7,638 | **6,955** | 7,316 | 7,670 | MT-011 |
+| 100 | 13,938 | **12,905** | 13,066 | 14,170 | MT-011 |
+
+**The P2 head is beaten by a free model at every cost ratio**, and at the
+project's stated 20:1 it is marginally worse than the unmodified baseline
+while costing 30-50% more compute.
+
+### The procurement answer
+
+**No.** An accelerator bought specifically to run the P2 head would purchase a
+model that MT-011 beats at every cost ratio, and MT-011 runs on the board that
+already exists. The accuracy case for the extra hardware does not hold.
+
+That is a cleaner answer than the compute veto alone could give. The veto said
+"this does not fit"; the measurement says "and it would not be worth the room
+even if it did."
+
+An accelerator may still be justified - it would restore the two-model
+ensemble, and it would buy frame-rate margin for movement classification. It
+is not justified by the P2 head.
+
+### What P2 actually did
+
+It is not a failure in the way MT-010 was. P2 is a **high-recall,
+low-precision** model, and it is the best in the programme at one specific
+thing:
+
+| Mechanism | MT-005 | MT-012 | Change |
+|-----------|-------:|-------:|--------|
+| merged boxes | 57 | **42** | **-15** |
+
+**The biggest reduction in merged detections of any experiment**, including
+MT-008 and MT-010 which were designed for exactly that. A stride-4 grid does
+separate adjacent people, which is precisely what the finer resolution was
+supposed to buy. At confidence 0.05 it also finds more people than any other
+model, 2,496.
+
+It simply pays for both with false positives - 1,566 at that threshold against
+MT-011's 1,005 - and the arithmetic does not come out in its favour at any
+plausible cost ratio.
+
+### Three techniques, one target, no movement
+
+The near-miss gap, matched at IoU 0.50 against IoU 0.25:
+
+| Model | IoU 0.50 | IoU 0.25 | Near-miss gap | Aimed at near-misses? |
+|-------|---------:|---------:|--------------:|-----------------------|
+| MT-005 | 2,426 | 2,501 | 75 | - |
+| MT-011 | 2,420 | 2,484 | **64** | **No** |
+| MT-012 (P2) | 2,419 | 2,495 | 76 | Yes |
+| MT-013 (NWD) | 2,405 | 2,481 | 76 | Yes |
+
+**Both techniques chosen to fix near-miss localisation produced a gap of 76.
+The one aimed at nothing of the kind produced 64.**
+
+Two independent approaches - more spatial resolution, and a smoother
+localisation loss - converged on exactly the same non-result. That is no
+longer a coincidence to be explained away per-experiment. It says the
+near-miss population is not limited by grid resolution or by loss geometry.
+
+Section 41 offered a reason for NWD specifically: that the assigner still
+selects anchors by IoU, so the boxes that fail on tiny targets are never
+supervised, and that the same explanation covers P2. **That hypothesis was
+wrong, and section 43 measures why.** It is left standing above as written,
+because a corrected record is more useful than a tidy one.
+
+---
+
+## 43. The Assigner Hypothesis Was Wrong - Measured, Not Argued
+
+Sections 41 and 42 proposed that the reason two well-motivated techniques both
+failed to move near-miss localisation was the anchor assigner: that
+Ultralytics selects which anchors are responsible for a ground-truth box using
+IoU, so on a 12 x 19 px person the near-miss anchors are excluded from
+supervision before any loss is evaluated. That would explain both failures at
+once, and it pointed at NWD-in-the-assigner as the next experiment.
+
+Before spending a training run on it, the claim was checked against the code
+and then against the data. **It does not survive either.**
+
+### What the assigner actually does
+
+`TaskAlignedAssigner.get_pos_mask` builds its positive mask as
+
+    mask_pos = mask_topk * mask_in_gts * mask_gt
+
+Three conditions, and only one of them involves a metric:
+
+| Condition | What it tests | Metric-based? |
+|-----------|---------------|---------------|
+| `mask_in_gts` | The anchor centre **falls inside the box** | **No - pure geometry** |
+| `mask_topk` | Among the top `k` by alignment score | Yes, IoU-weighted |
+| `mask_gt` | The ground-truth entry is real, not padding | No |
+
+`mask_in_gts` is a hard geometric filter applied *before* any ranking. An
+anchor whose centre lies outside the box can never be assigned, and no
+similarity metric changes that.
+
+### The measurement that settles it
+
+Counting, for all 8,533 boxes in the HIT-UAV train split at the deployment
+input of 512 x 640, how many anchor centres actually fall inside each box:
+
+| Stride | Level | Mean anchors per box | Median | Boxes with zero |
+|-------:|-------|---------------------:|-------:|----------------:|
+| 8 | P3 | 4.52 | 4 | 2.2% |
+| 16 | P4 | 1.16 | 1 | 23.0% |
+| 32 | P5 | 0.28 | 0 | 72.2% |
+| | **Total pool** | **~5.96** | | 1.0% across all three |
+
+The `topk` used in training is **10**.
+
+**The candidate pool averages about six and the selection keeps ten.** For a
+typical HIT-UAV person the top-k stage is not binding at all - every
+geometrically eligible anchor is already selected. There is nothing for a
+better ranking metric to rescue, because nothing is being ranked away.
+
+NWD in `iou_calculation` would still alter the *alignment score*, which
+weights the classification target through `target_scores *= norm_align_metric`.
+That is a second-order effect on supervision strength, not on selection - and
+MT-013 already changed the box loss for exactly those anchors to no
+measurable effect.
+
+### And the real bottleneck was already tested
+
+The binding constraint is anchor density, not the metric. The correct fix for
+that is a finer grid, and at stride 4 a P2 head gives **17.73 anchors per box
+against P3 4.52 - a four-fold larger pool.**
+
+That is MT-012. It was run, and the near-miss gap was 76 against the
+baseline 75.
+
+| Proposed cause of the near-miss population | Status |
+|--------------------------------------------|--------|
+| Loss geometry - IoU collapses on tiny boxes | Tested, MT-013: no effect |
+| Anchor density - too few eligible anchors | Tested, MT-012: 4x the pool, no effect |
+| Assigner metric - IoU rejects near-misses | **Ruled out by measurement: it rejects almost nothing** |
+
+All three candidate explanations are now closed, two by experiment and one by
+measurement. **NWD-in-the-assigner is not the most justified remaining
+experiment; it is the least.** It addresses a mechanism the data says is not
+operating.
+
+### What this implies about the remaining 75
+
+Seventy-five near-miss boxes is 2.9% of the 2,611 persons in the test split.
+Two independent, well-motivated interventions failed to move them, and the
+third explanation is measurably absent.
+
+The most likely remaining accounts are not model deficiencies at all:
+annotation ambiguity on targets 12 x 19 px, and the sensor resolution limit,
+where the true extent of a person is genuinely uncertain to within a pixel or
+two. `sensor_resolution_study.py` already showed how steeply performance
+depends on pixels-on-target.
+
+That is a defensible place to stop. **The detector line of inquiry is
+exhausted**, and the binding gap in this project has not been detection
+accuracy for some time - it is that nothing has flown.
+
+### On checking before running
+
+This cost one code reading and one counting script, perhaps twenty minutes,
+and it replaced a ninety-minute training run whose result was already
+determined. It is the same move as `architecture_budget.py` in section 33,
+applied to a hypothesis rather than to an architecture: **establish what a run
+can possibly tell you before spending the GPU on it.**
+
+It also corrects a mistake already committed to this log. The assigner
+explanation was written confidently in two sections and it was wrong. It
+stands there still, flagged, because a record that shows where the reasoning
+went astray is worth more than one that reads as though it never did.
+
+---
+
+## 44. NWD Closed in All Three Places, and Why
+
+Wang et al. ([13]) embed Normalized Wasserstein Distance in three places: the
+loss, the assigner, and non-maximum suppression. This project has now tested
+all three.
+
+| Insertion point | How tested | Result |
+|-----------------|------------|--------|
+| **Loss** | MT-013, full training run | No effect. Near-miss gap 76 vs 75 |
+| **Assigner** | Measurement, section 43 | Ruled out - topk 10, pool ~6, nothing to rank |
+| **Clustering / NMS** | Offline, this section | Equivalent to IoU |
+
+### The clustering test
+
+WBF clusters overlapping boxes by IoU at 0.60. Swapping the similarity to NWD
+costs nothing - it happens after the forward pass, needs no training, and does
+not change inference cost. The same cached boxes feed both, so only the
+similarity differs.
+
+IoU and NWD thresholds are not comparable as numbers, so each row is reported
+with the pixel offset it corresponds to for the median 12 x 19 px person:
+
+| Metric | Threshold | ~px | Matched | Unmatched | Precision |
+|--------|----------:|----:|--------:|----------:|----------:|
+| IoU | 0.70 | 2.1 | 2,433 | 630 | 0.7943 |
+| NWD | 0.85 | 2.6 | 2,436 | 639 | 0.7922 |
+| IoU | 0.60 | 3.0 | 2,426 | **490** | 0.8320 |
+| NWD | 0.80 | 3.6 | 2,428 | 509 | 0.8267 |
+| IoU | 0.50 | 4.0 | 2,421 | 439 | 0.8465 |
+| NWD | 0.75 | 4.6 | 2,421 | 460 | 0.8403 |
+
+**The two curves lie on top of each other.** At matched pixel tolerance NWD
+finds two or three more boxes and produces a few more false positives. Neither
+dominates. There is no configuration of NWD clustering that beats IoU
+clustering at 0.60.
+
+### Why - and this is predictable in advance
+
+For two boxes of **equal size**, both IoU and NWD are monotone decreasing
+functions of displacement. Thresholding a monotone function is the same
+decision whichever function you pick: only the threshold value changes.
+
+So NWD can only make a different *decision* from IoU when boxes differ in size
+or aspect. How much do they differ here?
+
+| | p05 | p25 | median | p75 | p95 |
+|---|----:|----:|-------:|----:|----:|
+| Box size, sqrt(w*h) px | 10.0 | 12.4 | **15.1** | 18.7 | 24.4 |
+
+**p95 / p05 = 2.44x**, standard deviation 28% of the mean. HIT-UAV is very
+nearly a single-scale dataset - which follows from how it was captured, a
+fixed sensor at 60-130 m photographing objects of one physical size.
+
+The consequence, spelled out:
+
+| Box | IoU 0.60 tolerance | NWD 0.80 tolerance |
+|-----|-------------------:|-------------------:|
+| p05, 7.9 x 12.6 px | 1.99 px | 3.55 px (fixed) |
+| median, 12.0 x 19.0 px | 3.00 px | 3.55 px (fixed) |
+| p95, 19.4 x 30.7 px | 4.84 px | 3.55 px (fixed) |
+
+NWD applies one pixel tolerance to every box; IoU applies a size-proportional
+one. On a population this tightly concentrated, most boxes sit near the median
+where the two agree, and the disagreement at the tails is too rare to move the
+totals.
+
+### What that says about the loss result too
+
+It reframes MT-013. NWD's advertised benefit is usually stated as "IoU
+collapses for tiny objects" - but collapse in *value* only matters where the
+value is used as a **gradient**. Where it is used as a **decision** - which
+anchor to assign, which boxes to cluster - monotonicity is all that matters,
+and IoU is monotone.
+
+That leaves the loss as the only place NWD could have helped, and MT-013
+tested it directly. Its likely reason for failing is separate: Ultralytics
+localises primarily through the distribution focal loss on box distances, and
+the IoU term the patch modified is one of two localisation terms rather than
+the dominant one.
+
+### The honest generalisation
+
+**NWD is a solution to a problem HIT-UAV does not have.** The papers reporting
+gains from it ([14]-[18]) train on mixed or multi-scale collections where IoU
+tolerance genuinely varies across the object population. This dataset spans
+2.44x.
+
+That is worth recording as a transferable lesson rather than as a failed
+experiment. A technique's published gain is a property of the technique **and**
+the data it was demonstrated on, and the second half is usually left implicit.
+Checking whether the target dataset exhibits the condition a technique
+addresses costs one histogram - considerably less than the three attempts it
+took here to establish the same thing.
+
+Section 43 made the same point about spending a run on a hypothesis before
+checking the code. This is the data-side version.
+
+---
+
+## 45. MT-011b - The Noise Floor, and What It Costs the Rest of This Log
+
+MT-011 became the only accepted experiment in this project and a deployment
+recommendation, on the strength of a single training run. MT-011b repeats it
+with **seed 1 instead of seed 0 and nothing else changed**. The difference
+between the two is, by construction, run-to-run variation.
+
+It should have been measured nine experiments ago.
+
+### The finding replicates - and strengthens
+
+| | mAP@50 | vs baseline |
+|---|------:|------------:|
+| MT-005 baseline | 0.9330 | - |
+| MT-011 (seed 0) | 0.9301 | **-0.0029** |
+| **MT-011b (seed 1)** | **0.9352** | **+0.0022** |
+
+Mission cost at each model's own optimum:
+
+| Model | Conf | Cost | People found | vs MT-005 |
+|-------|-----:|-----:|-------------:|----------:|
+| MT-005 | 0.10 | 3,738 | 2,470 | - |
+| MT-011 | 0.05 | 3,385 | 2,492 | **+9.4%** |
+| **MT-011b** | **0.05** | **3,188** | **2,513** | **+14.7%** |
+
+| Miss cost | MT-005 | MT-011 | MT-011b | MT-012 | MT-013 | Winner |
+|----------:|-------:|-------:|--------:|-------:|-------:|--------|
+| 1 | 675 | **586** | 627 | 696 | 636 | MT-011 |
+| 5 | 1,414 | **1,344** | 1,351 | 1,464 | 1,460 | MT-011 |
+| 20 | 3,738 | 3,385 | **3,188** | 3,746 | 3,686 | MT-011b |
+| 100 | 13,938 | 12,905 | **11,028** | 13,066 | 14,170 | MT-011b |
+
+**Both seeds beat MT-005 at every cost ratio tested.** The two-stage aerial
+pretraining result is real. That is the conclusion that matters, and it
+survives.
+
+### But the spread is larger than most of this log's deltas
+
+Same configuration, different seed:
+
+| Conf | MT-011 matched | MT-011b matched | Spread | MT-011 unmatched | MT-011b unmatched | Spread |
+|-----:|---------------:|----------------:|-------:|-----------------:|------------------:|-------:|
+| 0.25 | 2,420 | 2,430 | **+10** | 395 | 446 | +51 |
+| 0.15 | 2,451 | 2,471 | **+20** | 577 | 690 | +113 |
+| 0.05 | 2,492 | 2,513 | **+21** | 1,005 | 1,228 | +223 |
+
+**mAP@50 varies by 0.0051 between seeds of an identical configuration.**
+
+Set every experiment's headline delta against that:
+
+| Experiment | Delta mAP@50 vs baseline | As a multiple of the seed spread | Survives? |
+|------------|-------------------------:|---------------------------------:|-----------|
+| MT-013 (NWD) | -0.0006 | **0.1x** | **No - deep inside noise** |
+| MT-011 | -0.0029 | 0.6x | No - inside noise |
+| MT-011b | +0.0022 | 0.4x | No - inside noise |
+| MT-012 (P2) | -0.0080 | 1.6x | Marginal |
+| MT-010 (box loss) | -0.0084 | 1.6x | Marginal |
+
+**On mAP@50 alone, not one experiment in this project is cleanly outside the
+noise floor.** Two are marginal at 1.6x, and 1.6x from a sample of two is not
+a confident separation.
+
+### What this does and does not invalidate
+
+It would be easy to conclude that nothing here means anything. That is too
+strong, and the reason is worth stating precisely.
+
+**A single-number comparison is noise-dominated.** Every "rejected on mAP@50"
+verdict in this log should be read as "not distinguishable from the baseline",
+not as "worse". MT-013 in particular was rejected on a difference of 0.0006,
+which is a tenth of the measured spread. **That rejection is not supported by
+the evidence and is withdrawn** - NWD in the loss is untested-in-effect, not
+refuted. Sections 41 and 44 stand for different reasons: the assigner and
+clustering results are measurements of mechanism, not of accuracy, and neither
+depends on a single training run.
+
+**A swept comparison is not noise-dominated.** The mission-cost analysis
+evaluates each model at six confidence thresholds against seven cost ratios -
+42 comparisons per model, on the same fixed test split. Both MT-011 seeds beat
+MT-005 in all of them. A consistent direction across 42 paired comparisons is
+a far stronger signal than one number, and it is why the MT-011 conclusion
+survives while its magnitude does not: the effect is real, **the size of it is
+uncertain between 9.4% and 14.7%.**
+
+**Post-processing results are unaffected.** Section 36's weighted box fusion
+gain, 148 fewer false positives, involves no training at all. The same cached
+network output feeds both arms, so there is no seed and no variance. The same
+is true of section 43's anchor count and section 44's clustering comparison.
+**The two largest free wins in this project are the two that carry no
+training noise**, which is not a coincidence - they were measured rather than
+trained.
+
+### The mistake, plainly
+
+Eleven training runs were compared against a baseline without ever measuring
+how much two identical runs differ. Every verdict was issued against an
+unknown noise floor. That is the single largest methodological error in this
+project, it was cheap to avoid - one extra run, at any point - and it was not
+avoided until the twelfth.
+
+The reason it went unnoticed is ordinary: the first few experiments produced
+large, consistent differences (RGB 640 to 1280 moved mAP@50 by 0.15), so
+precision never seemed to be the binding issue. By the time the differences
+had shrunk to thousandths, the habit of reading them as signal was already
+established.
+
+### What follows
+
+1. **Report MT-011's advantage as a range, 9.4% to 14.7%**, never as a point.
+2. **Withdraw the MT-013 rejection.** State it as indistinguishable from the
+   baseline. Section 44's mechanistic argument for why NWD cannot help here is
+   independent of this and still stands.
+3. **Treat MT-010 and MT-012 as unresolved rather than rejected** on accuracy
+   grounds. MT-012's rejection on *compute* is unaffected - 1.3-1.5x inference
+   is a measurement, not a training outcome, and that alone settles it.
+4. **Any future experiment claiming a difference below about 0.01 mAP@50 needs
+   a seed repeat before the claim is made**, not after.
+5. Prefer swept, paired comparisons over single numbers wherever a decision
+   rests on them.

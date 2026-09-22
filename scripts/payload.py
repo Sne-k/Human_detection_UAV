@@ -78,6 +78,18 @@ CONF = 0.25
 NMS_IOU = 0.70
 FUSE_IOU = 0.55
 
+# Single-model post-processing. Measured in training_log.md section 36:
+# fusing overlapping boxes instead of suppressing them finds one more person,
+# sheds 148 unmatched boxes and gains 4.0 points of precision on the test
+# split, at zero inference cost.
+#
+# To fuse them the detector first has to keep them, so NMS is opened almost
+# all the way and the clustering is done by weighted box fusion instead. NMS
+# discards every box in a cluster but the highest-confidence one, and the
+# highest-confidence box is not necessarily the best-localised one.
+SINGLE_MODEL_NMS_IOU = 0.99
+SINGLE_MODEL_FUSE_IOU = 0.60
+
 # Movement classification, calibrated in docs/realtime_pipeline.md section 2.
 HISTORY_FRAMES = 15
 MOVEMENT_THRESHOLD_PX = 15.0
@@ -131,7 +143,8 @@ class Detector:
     """
 
     def __init__(self, names, device, conf=CONF, fuse_iou=FUSE_IOU,
-                 explicit_weights=None, shape_override=None, classes=None):
+                 explicit_weights=None, shape_override=None, classes=None,
+                 single_fuse_iou=SINGLE_MODEL_FUSE_IOU):
         from ultralytics import YOLO
 
         self.conf = conf
@@ -168,6 +181,7 @@ class Detector:
             print(f"  loaded {name} @ {shape[1]}x{shape[0]}")
 
         self.ensemble = len(self.models) > 1
+        self.single_fuse_iou = single_fuse_iou
 
     def __call__(self, frame):
         """Returns (boxes Nx4 xyxy, scores N, sources list)."""
@@ -185,7 +199,7 @@ class Detector:
                 padded,
                 imgsz=list(entry["shape"]),
                 conf=self.conf,
-                iou=NMS_IOU,
+                iou=NMS_IOU if self.ensemble else SINGLE_MODEL_NMS_IOU,
                 device=self.device,
                 classes=self.classes,
                 verbose=False,
@@ -222,7 +236,9 @@ class Detector:
         scores = np.concatenate(pooled_scores)
 
         if not self.ensemble:
-            return boxes, scores, sources
+            return weighted_box_fusion(
+                boxes, scores, sources, self.single_fuse_iou
+            )
 
         return weighted_box_fusion(boxes, scores, sources, self.fuse_iou)
 

@@ -356,6 +356,54 @@ the lever.
 
 ---
 
+## 4b. End-to-End Cost on CPU - What the Payload Actually Runs
+
+Everything in section 4 is a GPU measurement of a forward pass. The deployment
+target is a CPU-only board, and the payload does considerably more per frame
+than a forward pass.
+
+Measured by running `payload.py` over the synthetic test sequence with
+`--device cpu`, 120 frames:
+
+| Configuration | Pipeline FPS | Frame median | Detect median | Everything else |
+|---------------|-------------:|-------------:|--------------:|----------------:|
+| Full pipeline | 9.25 | 72.49 ms | 63.78 ms | **8.7 ms** |
+| `--no-ego-motion` | 10.08 | 63.96 ms | 61.89 ms | **2.1 ms** |
+
+Two components, separated:
+
+| Component | Cost per frame |
+|-----------|---------------:|
+| Tracking, movement classification, geolocation, weighted box fusion | **2.1 ms** |
+| Ego-motion: Lucas-Kanade optical flow plus affine RANSAC | **6.6 ms** |
+
+The detector runs through PyTorch here rather than the exported ONNX graph,
+which is why it reads 62-64 ms against the graph's 38.8 ms. The overhead is
+what this measurement is for and it does not depend on how the detector is
+executed.
+
+### What this means for deployment
+
+| Configuration | Dev CPU | Pi 5 estimate | Pi 5 FPS |
+|---------------|--------:|---------------|----------|
+| ONNX detector alone | 38.8 ms | 117 - 194 ms | 5.2 - 8.6 |
+| + tracking, geolocation, fusion | 40.9 ms | 123 - 205 ms | 4.9 - 8.1 |
+| **+ ego-motion (full pipeline)** | **47.5 ms** | **143 - 238 ms** | **4.2 - 7.0** |
+
+**The payload costs about 22% more than the detector**, and every frame-rate
+claim made before this measurement was optimistic by that margin. See
+`training_log.md` section 39, and `deployment_target.md` section 3b for the
+corrected shopping specification.
+
+### Post-processing is not the expensive part
+
+Weighted box fusion replaced NMS for single-model runs (`training_log.md`
+section 36) and is included in the 2.1 ms above. It shed 148 false positives
+and gained 4.0 points of precision for a cost that does not separate from
+tracking and geolocation at this resolution.
+
+---
+
 ## 5. Model Export
 
 Implemented in [`scripts/export_models.py`](../scripts/export_models.py).

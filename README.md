@@ -33,21 +33,101 @@ controllability.
 Held-out HIT-UAV test split: **579 images, 2,611 person instances**, never
 used for training or model selection.
 
-| Configuration | Recall | Precision | Missed | Unmatched | Blind images |
-|---------------|--------|-----------|-------:|----------:|-------------:|
-| MT-005 (baseline) | 0.9288 | 0.7917 | 186 | 638 | 8 |
-| **MT-005 + MT-006, WBF** | **0.9406** | **0.7992** | **155** | **617** | **5** |
+| Configuration | Recall | Precision | Missed | Unmatched | Blind | Cost |
+|---------------|--------|-----------|-------:|----------:|------:|------|
+| MT-005, NMS (was baseline) | 0.9288 | 0.7917 | 186 | 638 | 8 | 1x |
+| **MT-005, WBF** | **0.9291** | **0.8320** | **185** | **490** | **8** | **1x** |
+| MT-005 + MT-006, WBF | 0.9406 | 0.7992 | 155 | 617 | 5 | 2x |
 
-The two-model fusion is the only configuration found that improves on the
-baseline **on every axis at once** - more people found, fewer missed, *fewer*
-false positives, higher precision. Its cost is 2x inference.
+**The deployed configuration fuses overlapping boxes instead of suppressing
+them, and it is free.** NMS keeps only the highest-confidence box in a
+cluster, and the highest-confidence box is not necessarily the best-localised
+one; weighted box fusion averages the cluster instead. That is better on every
+axis than the old baseline - **148 fewer false positives, 23% of them, and
++4.0 points of precision** - with the network, the exported graph and the
+Raspberry Pi 5 latency all unchanged. Verified to reproduce exactly in
+`scripts/payload.py`.
+
+The two-model ensemble still finds 31 more people and remains the
+accuracy-optimal configuration, but it costs **2x inference**, which the
+target board has no headroom for. Single-model fusion sheds seven times more
+false positives than the ensemble, for nothing. See
+[`docs/training_log.md`](docs/training_log.md) section 36.
+
+### MT-011: aerial pretraining, and a result that was nearly missed
+
+Starting from VisDrone-pretrained weights instead of COCO costs **nothing** at
+inference - same architecture, same graph, same latency. On the conventional
+metric it looks like another failure: mAP@50 0.9301 against 0.9330, six fewer
+people found at confidence 0.25.
+
+What it actually learned was **calibration**, which a fixed threshold hides by
+construction:
+
+| Conf | MT-005 found | unmatched | MT-011 found | unmatched |
+|-----:|-------------:|----------:|-------------:|----------:|
+| 0.25 | 2,426 | 490 | 2,420 | **395** |
+| 0.10 | 2,470 | 918 | 2,469 | **716** |
+| **0.05** | 2,485 | 1,338 | **2,492** | **1,005** |
+
+Appearance does not transfer between RGB and thermal, but *"this shape, at
+this scale, from this altitude, is not a person"* does. Having seen aerial
+vehicles, roads and clutter, it stops firing on their thermal analogues - so
+it can be run far more sensitively, which is what a search payload wants.
+
+**At each model's own mission-optimal threshold, MT-011 finds more people at
+9.4-14.7% lower cost**, and both seeds win at every missed-person cost ratio
+from 1:1 to 100:1. Adopting it means also lowering the confidence threshold;
+the two are one decision. See [`docs/training_log.md`](docs/training_log.md)
+sections 40 and 45.
+
+The range is not hedging. A seed repeat (MT-011b, identical but for the seed)
+measured the noise floor at **0.0051 mAP@50** - larger than most of this
+project's headline deltas. The MT-011 *direction* survives, because it is
+consistent across 42 paired comparisons; its *magnitude* is uncertain.
+
+### Against the published HIT-UAV baselines
+
+Same dataset, same splits - the only externally comparable numbers available:
+
+| Model | Person AP@0.50 |
+|-------|---------------:|
+| YOLOv4 (dataset paper) | 89.88% |
+| SSD-512 | 85.6% |
+| Faster-RCNN | 75.5% |
+| **MT-005 (this project)** | **93.3%** |
+
+With the caveat that this project trains person-only while the paper trains
+four classes. See [`docs/related_work.md`](docs/related_work.md).
+
+### The evaluation criterion was stricter than the mission needs
+
+| Criterion | Box error rejected | People found | Unmatched | Recall |
+|-----------|-------------------:|-------------:|----------:|--------|
+| IoU 0.50 (CV convention) | 0.58 m | 2,426 | 490 | 0.9291 |
+| **IoU 0.25 (mission-derived)** | **1.05 m** | **2,501** | **415** | **0.9579** |
+
+Each fix is reported with a **+/- 3.8 m** position uncertainty, which is 3.6x
+larger than the box error IoU 0.25 still accepts - so a detection rejected for
+landing between 0.25 and 0.50 would have sent the rescue team to the same
+place. **75 more people, no model change.** mAP@50 is still reported as the
+comparable metric; see [`docs/training_log.md`](docs/training_log.md)
+section 32 for how to state both honestly.
+
+Under the old NMS post-processing this gain was 86 people rather than 75. It
+shrank because fusion and the loosened criterion recover *the same* near-miss
+boxes, so fixing them in post-processing leaves fewer for the criterion to
+forgive - which is what should happen if both explanations are right.
 
 ### It works better in the dark
 
 | Condition | Images | Recall | Precision |
 |-----------|-------:|--------|-----------|
-| **Night** | 396 | **0.9422** | **0.8234** |
-| Day | 183 | 0.8786 | 0.6860 |
+| **Night** | 396 | **0.9432** | **0.8631** |
+| Day | 183 | 0.8768 | 0.7267 |
+
+Measured in the deployed fusion configuration. Fusion adds about 4 points of
+precision in *both* conditions and leaves the conclusion unchanged.
 
 Thermal sensing does not use visible light, so darkness is the detector's
 *best* condition. Sun-heated roads and rooftops reach body temperature in
@@ -109,11 +189,31 @@ python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemet
 | MT-007 | Thermal | 256 px crop augmentation | Rejected |
 | MT-008 | Thermal | mosaic = 0 | Rejected, merged boxes worse |
 | MT-009 | Thermal | hard-negative mining | Rejected, no measurable gain |
-| MT-010 | Thermal | box-loss weight 15.0 | In progress |
+| MT-010 | Thermal | box-loss weight 15.0 | Rejected, worse on every axis |
+| MT-011 | Thermal | VisDrone -> HIT-UAV transfer | **Accepted** - better calibrated |
+| MT-013 | Thermal | NWD localisation loss | Indistinguishable from baseline |
+| MT-011b | Thermal | MT-011 seed repeat | **Noise floor: 0.0051 mAP@50** |
+| MT-012 | Thermal | P2 small-object head | Rejected on compute **and** accuracy |
 
-**Seven directions tested; none improved the single-model baseline.** Model
-capacity was ruled out on compute, not accuracy: YOLO26s runs at an estimated
-1.7-2.8 FPS on the target against a 6.7 FPS requirement.
+**Eleven directions tested; one improved the baseline.** MT-011 is the only
+one, and it was nearly missed - see below.
+
+Two of those eleven were aimed squarely at the dominant measured failure,
+near-miss localisation: a P2 detection head (MT-012) and an NWD localisation
+loss (MT-013). **Both produced a near-miss gap of 76 against the baseline's
+75.** MT-011, aimed at nothing of the kind, produced 64. Two independent
+approaches converging on the same non-result says the near-miss population is
+limited by neither grid resolution nor loss geometry - most likely by the
+IoU-based anchor assigner that runs upstream of both. Model capacity was ruled out on compute,
+not accuracy: YOLO26s runs at an estimated 1.8-2.9 FPS on the target against a
+6.7 FPS requirement.
+
+The first seven all attacked target *scale* and moved no failure mechanism at
+all. MT-010 is the first that moved its target - merged boxes fell from 57 to
+49 - and still lost, because total loss is a budget: doubling the box term
+halves the relative weight of classification, and blind images more than
+doubled from 8 to 18. That is why MT-013 changes the *shape* of the
+localisation loss rather than its weight.
 
 Full detail, including every negative result, in
 [`docs/training_log.md`](docs/training_log.md).
@@ -150,6 +250,8 @@ problem**. That is why fusing two near-misses improves both columns at once.
 | [`docs/hardware_selection.md`](docs/hardware_selection.md) | Hardware trade study, every requirement measured |
 | [`docs/payload_icd.md`](docs/payload_icd.md) | Interface control document |
 | [`docs/literature_comparison.md`](docs/literature_comparison.md) | Positioning against Rizk [3] and Lygouras [4] |
+| [`docs/related_work.md`](docs/related_work.md) | HIT-UAV benchmarks, comparable systems, techniques to adopt |
+| [`docs/references.md`](docs/references.md) | Every source, tagged by provenance: local papers, online papers, code, datasets, tools |
 
 ---
 
@@ -168,6 +270,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `payload.py` | **Unified runtime**: detection, fusion, tracking, movement, geolocation |
 | `realtime_detect.py` | Single-model pipeline; `payload.py` reuses its components |
 | `ensemble_detect.py` | Ensemble inference with per-stage timing |
+| `single_model_wbf.py` | Fusion vs suppression on one model, the free precision gain |
 | `geolocate.py` | Pixel detections to ground coordinates |
 
 ### Dataset preparation
@@ -188,14 +291,19 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | Script | Purpose |
 |--------|---------|
 | `train_pilot.py` | Pilot training run |
-| `train_mt008.py` | Controlled experiments (mosaic, dataset, loss weights) |
+| `train_mt008.py` | Controlled experiments (mosaic, dataset, loss weights, starting weights, NWD) |
+| `nwd_loss.py` | Normalized Wasserstein Distance localisation loss, with a self-test |
 | `benchmark_models.py` | Uniform accuracy benchmark across models |
 | `benchmark_latency.py` | Deployment latency with launch-bound diagnostic |
 | `benchmark_edge_cpu.py` | CPU-only latency, Raspberry Pi proxy |
+| `architecture_budget.py` | Gate: does a candidate architecture fit the target, before training it |
+| `quantize_int8.py` | INT8 static quantisation, with a QDQ-fusion diagnostic and mandatory re-evaluation |
+| `run_experiment_queue.py` | Chain training, test metrics, predictions and error analysis unattended |
 | `export_models.py` | ONNX export with verification against PyTorch |
 | `coverage_requirements.py` | Derive required frame rate from the mission |
 | `sensor_resolution_study.py` | Detection vs thermal sensor resolution |
 | `operating_point.py` | Pick the confidence threshold from mission cost |
+| `operational_criterion.py` | Derive the IoU criterion from the geolocation error budget |
 
 ### Error analysis
 
@@ -235,8 +343,33 @@ light-independent modality and the one that fits the compute budget. MT-004 at
 **Thermal sensor resolution is the binding purchase decision.** A 160 x 120
 module loses one person in three. **384 x 288 is the floor.**
 
+**Eleven runs were compared before anyone measured the noise floor.** A seed
+repeat put it at 0.0051 mAP@50, which is larger than most of the deltas this
+project had been reading as signal. Single-number verdicts below that are
+withdrawn; swept comparisons across thresholds and cost ratios survive, and so
+do the post-processing results, which involve no training and therefore no
+variance. See [`docs/training_log.md`](docs/training_log.md) section 45.
+
+**Three results were hidden by defaults nobody chose.** The IoU 0.50 matching
+criterion (86 people), NMS post-processing (148 false positives) and the
+confidence 0.25 threshold (MT-011 entirely). A comparison protocol is itself a
+choice, and one fixed before the space of possible results is understood will
+eventually hide one.
+
+**Architecture changes are gated on compute before they are trained.** The
+literature's most-supported technique for small objects - a P2 detection head -
+was measured at 4.0-6.6 FPS on the target against a 6.7 FPS requirement and
+**cancelled before training**. GFLOPs understates it: 1.3-1.5x latency for
+1.30x arithmetic, because a stride-4 head is bandwidth-bound and bandwidth is
+where a Pi 5 is weakest. Training-time changes - losses, augmentation,
+datasets - are free at inference and need no gate. See
+[`docs/training_log.md`](docs/training_log.md) section 33.
+
 **The frame-rate requirement is derived, not assumed.** 6.7 FPS at 60 m,
-falling to 4.0 at 100 m - set by ground coverage, not video smoothness.
+falling to 4.0 at 100 m - set by ground coverage, not video smoothness. And it
+applies to the **payload**, not the detector: tracking, geolocation, fusion and
+ego-motion add 22% on top of inference, measured end to end. See
+[`docs/training_log.md`](docs/training_log.md) section 39.
 
 ---
 

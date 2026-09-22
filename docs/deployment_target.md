@@ -211,6 +211,29 @@ take to a hardware trade study - considerably less demanding than a reflex
 30 FPS target, which would oversize the board by roughly an order of magnitude
 on an airframe where weight and power are already constrained.
 
+**Corrected:** that specification is for the *detector*, and the payload is
+about 22% more expensive than the detector. Measured in `training_log.md`
+section 39, tracking, movement classification, geolocation and fusion cost
+2.1 ms per frame and ego-motion compensation a further 6.6 ms, taking the
+full pipeline from 38.8 ms to 47.5 ms on the development CPU.
+
+| Configuration | Dev CPU | Pi 5 estimate | Pi 5 FPS | 6.7 @ 60 m | 4.0 @ 100 m |
+|---------------|--------:|---------------|----------|-----------|------------|
+| Detector alone | 38.8 ms | 117 - 194 ms | 5.2 - 8.6 | marginal | clears |
+| + tracking, geoloc, fusion | 40.9 ms | 123 - 205 ms | 4.9 - 8.1 | marginal | clears |
+| **Full pipeline** | **47.5 ms** | **143 - 238 ms** | **4.2 - 7.0** | marginal | **clears by 0.2** |
+
+**The specification to shop with is therefore about 7 FPS on the whole
+payload, not on the detector** - roughly 8.5 FPS of detector throughput to
+leave room for everything else.
+
+Ego-motion compensation is 6.6 ms of that, and it exists only to serve
+movement classification, which is also the sole reason the requirement is
+6.7 FPS rather than 1.34. Dropping movement classification in the search
+phase - which section 28 of the training log already argues for on mission
+grounds - removes the cost and the requirement together, and the payload then
+clears its target fourfold.
+
 ---
 
 ## 3c. Memory Footprint
@@ -311,20 +334,82 @@ comparison.
 
 ---
 
+## 3f. The Architecture Budget Gate
+
+Everything above measures models that already exist. The complementary
+question is whether a *proposed* architecture can fit before a training run is
+spent on it, and `scripts/architecture_budget.py` answers it: build the
+candidate from its YAML at the deployment class count, export to ONNX at the
+deployment shape, time it through the same CPU harness.
+
+Weights are random, because latency depends on the graph and not on weight
+values. **The cost is knowable before the accuracy is.**
+
+| Architecture | Params | GFLOPs | Dev CPU | Pi 5 estimate | Pi 5 FPS |
+|--------------|-------:|-------:|--------:|---------------|----------|
+| YOLO26n (deployed) | 2.50 M | 4.7 | 38.8 ms | 117 - 194 ms | 5.2 - 8.6 |
+| YOLO26n-p2 | 2.52 M | 6.1 | 50.2 ms | 150 - 251 ms | 4.0 - 6.6 |
+| YOLO26s | 9.95 M | 18.2 | 114.2 ms | 343 - 571 ms | 1.8 - 2.9 |
+
+| Architecture | 6.7 FPS @ 60 m | 4.0 FPS @ 100 m | 1.34 FPS report-only |
+|--------------|----------------|-----------------|----------------------|
+| YOLO26n | marginal | clears | clears |
+| YOLO26n-p2 | **FAILS** | marginal | clears |
+| YOLO26s | FAILS | FAILS | clears |
+
+This cancelled MT-012, the P2 small-object head recommended by the literature
+survey, before it was trained - its optimistic end still falls below the
+binding requirement.
+
+**GFLOPs is not a safe proxy for cost here.** A P2 head costs 1.3-1.5x latency
+for 1.30x arithmetic because a stride-4 feature map is bandwidth-bound, and
+bandwidth is where a Pi 5 is weakest relative to x86. A wider backbone runs
+the other way: YOLO26s costs 2.9-3.0x for 3.87x arithmetic, because dense
+matrix work is what SIMD and cache handle well.
+
+The rule: **changes that touch the network go through this gate before they
+are trained; changes that touch only training - losses, augmentation,
+datasets, schedules - are free at inference and do not.** Every experiment
+from MT-005 to MT-010 was the second kind, which is why the deployed cost has
+never moved.
+
+---
+
 ## 4. Options If More Performance Is Needed
 
 | Option                       | Effect                                    | Cost |
 | ---------------------------- | ----------------------------------------- | ---- |
 | Keep MT-005 at 640, CPU only | 5-9 FPS, no extra hardware                | None |
 | Add an AI accelerator (Hailo)| Large speedup, enables ensemble           | Adds cost |
-| INT8 quantisation            | Typically 2-3x on CPU, needs re-verification | None, but accuracy must be re-checked |
+| INT8 quantisation            | **Tried and rejected** - 1.17x, costs 406 people | Measured, see below |
 | NCNN / TFLite instead of ORT | Often faster than ORT on ARM              | Effort only |
 | Reduce input resolution      | Direct saving, costs recall               | None |
 
-INT8 quantisation is the most promising untried option, because it costs
-nothing but effort and the verification harness to check it already exists.
-It has not been attempted, and it would change the detection numbers, so it
-would need a full re-run of the accuracy comparison.
+### INT8 quantisation was tried, and rejected
+
+It was the most promising untried option on this list and it is no longer
+untried. Measured with `scripts/quantize_int8.py`:
+
+| | Dev CPU | Pi 5 estimate | Matched persons | Recall | 6.7 FPS @ 60 m |
+|---|--------:|---------------|----------------:|-------:|----------------|
+| FP32 | 41.8 ms | 4.8 - 8.0 FPS | 2,425 | 0.9288 | marginal |
+| INT8 | 35.8 ms | 5.6 - 9.3 FPS | **2,019** | **0.7733** | marginal |
+
+**1.17x, at the cost of 406 people - 16.7% of every detection the payload
+makes - and blind images rising from 8 to 23.** The deployment verdict does
+not change either: both precisions are marginal at 60 m and both clear 100 m,
+so nothing in this project would be decided differently.
+
+Two traps were found on the way and are recorded in `training_log.md` section
+35. Int8 *activations* make it 2.3x slower, because ONNX Runtime's x86 kernels
+want uint8 activations against int8 weights. And quantising the detection head
+destroys the detector silently - the classification branch rounds to exactly
+zero while box regression still looks healthy, so the model reports nothing
+while a latency benchmark on it still reports a speedup.
+
+The 1.17x is an x86 figure and the fusion diagnostic shows zero QLinearConv
+nodes, so ARM may do better on speed. It will not do better on accuracy: the
+406 people are lost before anything reaches the CPU's instruction set.
 
 ---
 

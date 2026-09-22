@@ -20,7 +20,11 @@ Datasets, model weights and generated artefacts are excluded from Git via
 | MT-007 | Thermal | 640 | HIT-UAV + 256 px crops | Completed - rejected |
 | MT-008 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
 | MT-009 | Thermal | 640 | HIT-UAV + hard negatives | Completed - rejected |
-| MT-010 | Thermal | 640 | HIT-UAV Person | In progress |
+| MT-010 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
+| MT-011 | Thermal | 640 | HIT-UAV Person | Completed - **accepted** |
+| MT-012 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
+| MT-013 | Thermal | 640 | HIT-UAV Person | Completed - indistinguishable |
+| MT-011b | Thermal | 640 | HIT-UAV Person | Completed - seed repeat, noise floor |
 
 Training runs are written by Ultralytics under
 `runs/detect/results/training/<ID>/`.
@@ -31,7 +35,7 @@ Training runs are written by Ultralytics under
 
 | Path | Produced by |
 |------|-------------|
-| `results/benchmark/` | `benchmark_models.py`, `benchmark_latency.py`, `benchmark_edge_cpu.py` |
+| `results/benchmark/` | `benchmark_models.py`, `benchmark_latency.py`, `benchmark_edge_cpu.py`, `architecture_budget.py` |
 | `results/export/` | `export_models.py` |
 | `results/error_analysis/` | the `analyze_*` and `compare_*` scripts |
 | `results/error_analysis/ensemble/` | `ensemble_thermal.py` |
@@ -40,6 +44,9 @@ Training runs are written by Ultralytics under
 | `results/ensemble_pipeline/` | `ensemble_detect.py` |
 | `results/sensor_study/` | `sensor_resolution_study.py` |
 | `results/operating_point/` | `operating_point.py` |
+| `results/quantization/` | `quantize_int8.py` |
+| `results/single_model_wbf/` | `single_model_wbf.py` |
+| `results/experiment_queue/` | `run_experiment_queue.py` |
 | `results/hard_negatives/` | `mine_hard_negatives.py` |
 | `results/test_sequence/` | `make_test_sequence.py`, `payload.py` |
 | `results/dataset_check/` | `visualize_dataset.py` |
@@ -60,6 +67,12 @@ Custom error analysis and failure mechanisms:
 
 ```bash
 python scripts/evaluate_experiment.py --labels MT-005-test-analysis
+```
+
+Single-model fusion, the deployed configuration:
+
+```bash
+python scripts/single_model_wbf.py
 ```
 
 Two-model fusion:
@@ -88,5 +101,6 @@ python scripts/coverage_requirements.py
 | `docs/hardware_selection.md` | Hardware trade study |
 | `docs/payload_icd.md` | Interface control document |
 | `docs/literature_comparison.md` | Positioning against the reference systems |
+| `docs/references.md` | Every source, tagged by provenance |
 | `docs/system_architecture.md` | Architecture and design decisions |
 | `docs/project_progress.md` | Stage-by-stage progress |
