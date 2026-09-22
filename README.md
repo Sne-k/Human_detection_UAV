@@ -272,6 +272,8 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `ensemble_detect.py` | Ensemble inference with per-stage timing |
 | `single_model_wbf.py` | Fusion vs suppression on one model, the free precision gain |
 | `geolocate.py` | Pixel detections to ground coordinates |
+| `webcam_trial.py` | Live-camera trial, explicit about what it can and cannot validate |
+| `verify_deployed_config.py` | Runs the assembled payload and checks it reproduces the parts |
 
 ### Dataset preparation
 
@@ -291,7 +293,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | Script | Purpose |
 |--------|---------|
 | `train_pilot.py` | Pilot training run |
-| `train_mt008.py` | Controlled experiments (mosaic, dataset, loss weights, starting weights, NWD) |
+| `train_experiment.py` | Controlled experiments, each expressed as a difference from MT-005 |
 | `nwd_loss.py` | Normalized Wasserstein Distance localisation loss, with a self-test |
 | `benchmark_models.py` | Uniform accuracy benchmark across models |
 | `benchmark_latency.py` | Deployment latency with launch-bound diagnostic |
@@ -311,16 +313,9 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 |--------|---------|
 | `evaluate_experiment.py` | Full baseline comparison for one experiment |
 | `analyze_small_objects.py` | Size-stratified recall |
-| `analyze_mt005_test_errors.py` | Thermal test error analysis |
-| `analyze_mt006_test_errors.py` | MT-006 equivalent |
-| `analyze_mt007_test_errors.py` | MT-007 equivalent |
-| `analyze_mt005_test_errors_conf010.py` | Thermal test error analysis at conf 0.10 |
-| `analyze_mt005_remaining_misses.py` | Categorise remaining misses |
 | `analyze_common_failures.py` | Characterise shared failures |
 | `verify_crowding_hypothesis.py` | Diagnose the mechanism of each miss |
-| `compare_mt005_confidence.py` | Confidence-threshold diagnostic |
-| `compare_mt005_vs_mt007.py` | Per-person model comparison |
-| `compare_mt005_vs_mt007_conf010.py` | Per-person comparison at any threshold |
+| `compare_mt005_vs_mt007_conf010.py` | Per-person model comparison at any threshold |
 | `compare_standard_vs_tiled.py` | Tiled-inference comparison |
 | `ensemble_thermal.py` | File-level fusion study |
 | `test_tiled_inference.py` | Tiled inference implementation |
@@ -378,6 +373,9 @@ ego-motion add 22% on top of inference, measured end to end. See
 - **No hardware.** Every deployment figure is extrapolated from x86.
 - **No real flight video.** Tracking and movement are validated on a
   synthetic sequence with one moving target.
+  A live-camera trial exists (`scripts/webcam_trial.py`) but the webcam is
+  visible light while the detector is thermal, so it validates the pipeline,
+  not detection.
 - **No smoke or fog data.** Obscurant penetration is inferred from LWIR
   physics, not measured.
 - **RGB and thermal metrics are not comparable** - unrelated datasets.

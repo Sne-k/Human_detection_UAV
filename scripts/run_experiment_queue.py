@@ -53,7 +53,7 @@ CONF = 0.25
 EPOCHS = 50
 
 # Each entry is expressed as a difference from MT-005. Anything not named here
-# is inherited from MT-005's configuration by train_mt008.py.
+# is inherited from MT-005's configuration by train_experiment.py.
 QUEUE = [
     {
         "name": "MT-010",
@@ -282,7 +282,7 @@ def train(entry, stream):
     log(f"{name}: training - {entry['hypothesis']}", stream)
 
     return run(
-        [PYTHON, str(SCRIPTS / "train_mt008.py"), "--name", name] + entry["train"],
+        [PYTHON, str(SCRIPTS / "train_experiment.py"), "--name", name] + entry["train"],
         stream, f"train {name}",
     )
 

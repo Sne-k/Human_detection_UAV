@@ -752,7 +752,8 @@ comparison was performed on all 2,611 test-set ground-truth persons to check
 whether the two models fail on the *same* people or on different people.
 
 Matching used IoU >= 0.50 at confidence 0.25
-(`scripts/compare_mt005_vs_mt007.py`).
+(`scripts/compare_mt005_vs_mt007_conf010.py`, which supersedes the
+fixed-threshold version this result was originally produced with).
 
 | Category               | Persons | Share |
 | ---------------------- | ------: | ----- |
@@ -3168,3 +3169,207 @@ established.
    a seed repeat before the claim is made**, not after.
 5. Prefer swept, paired comparisons over single numbers wherever a decision
    rests on them.
+
+---
+
+## 46. Assembling the Payload, and Verifying It
+
+Every result up to here was measured on a *component*. The detector was
+benchmarked alone, fusion was compared offline against cached boxes, the
+operating point came from a sweep over saved predictions, and the pipeline
+timing used a different model at a different threshold. None of that is the
+payload.
+
+`scripts/verify_deployed_config.py` runs the assembled thing - the same
+`Detector` the runtime uses, at the recommended configuration - over the
+held-out test split.
+
+### The assembly reproduces the parts
+
+MT-011b, weighted box fusion at 0.60, NMS opened to 0.99:
+
+| Conf | Matched | Missed | Unmatched | Blind | Recall | Precision |
+|-----:|--------:|-------:|----------:|------:|-------:|----------:|
+| 0.25 | 2,430 | 181 | 446 | 6 | 0.9307 | 0.8449 |
+| 0.10 | 2,489 | 122 | 868 | 1 | 0.9533 | 0.7414 |
+| 0.05 | **2,513** | **98** | 1,224 | 1 | **0.9625** | 0.6725 |
+
+**Matched persons reproduce the offline study exactly** at every threshold.
+Unmatched boxes differ by 3-4 out of 1,228, about 0.3%, which is PyTorch
+against ONNX numerics rather than a configuration difference - the offline
+sweep drove the exported graph and the payload runs the weights.
+
+That distinction matters. A drift in *matched* would have meant a component
+was wired differently from how it was measured, which is precisely the error
+that silently cost 27 detections in the export study.
+
+### The risk flagged earlier was not real
+
+Section 39 measured the non-detection pipeline at 2.1 ms on a sequence
+averaging about one person per frame, and recommending a much more sensitive
+threshold without rechecking that was flagged as an open risk.
+
+| Conf | Boxes per image | vs 0.25 |
+|-----:|----------------:|--------:|
+| 0.25 | 4.97 | 1.00x |
+| 0.10 | 5.80 | 1.17x |
+| 0.05 | 6.45 | **1.30x** |
+
+Detection density rises only 30% between the conventional threshold and the
+most sensitive one, not the several-fold increase that would have threatened
+the tracker. End to end on the test sequence:
+
+| Conf | Frame median | Pipeline FPS |
+|-----:|-------------:|-------------:|
+| 0.25 | 59.6 ms | 12.0 |
+| 0.05 | **59.4 ms** | **12.1** |
+
+**Indistinguishable.** The recommended operating point costs nothing in
+pipeline time, and the concern is closed by measurement rather than left
+hanging.
+
+### An observation about tracking that needs real video
+
+The same 120-frame sequence - which contains **one** moving target - through
+both detectors at conf 0.10:
+
+| | Unique tracks | Detections geolocated | Classified moving |
+|---|-------------:|----------------------:|------------------:|
+| MT-005 | 15 | 165 | **0** |
+| MT-011b | **2** | 20 | **1** |
+
+MT-005 fragments a single person across fifteen track IDs and produces more
+detections than there are frames, so no track survives the fifteen-frame
+history the movement classifier requires - **it never classified anything at
+all.** MT-011b holds two tracks and produced a movement call.
+
+This is consistent with MT-011b being better calibrated: fewer spurious boxes
+means fewer competing association candidates, which means stabler tracks. But
+MT-011b also fires on only about one frame in six here, so it is not
+straightforwardly better either.
+
+**This is a synthetic sequence - a still frame panned and cropped - and it is
+one observation.** Recorded as something to check first on real flight video,
+not as a result.
+
+---
+
+## 47. The Live-Camera Trial and What It Can Say
+
+No hardware has been procured, so the only live sensor available is the
+laptop webcam. `scripts/webcam_trial.py` runs the payload against it.
+
+**The webcam is a visible-light camera and the deployed detector is thermal.**
+MT-011b has only ever seen 640 x 512 LWIR frames from 60-130 m. Pointed at a
+webcam it will detect close to nothing, and that is not a defect - it is being
+asked a question it was never built to answer. MT-004, this project's RGB
+model, is no better matched: it was trained on aerial imagery where a person
+is about 12 x 19 px, and a face at desk distance is as far outside its domain
+as thermal is outside a webcam's.
+
+So the trial offers three modes, answering different questions:
+
+| Mode | Detector | Question it answers |
+|------|----------|---------------------|
+| `pipeline` | Stock COCO weights | Does the whole payload run on live input with real detections flowing through it? |
+| `rgb` | MT-004 | What does this project's RGB model do out of domain? |
+| `thermal` | MT-011b | What does a thermal detector do on visible light? |
+
+### What it validates
+
+Measured on live camera input, CPU, 640 x 480:
+
+| | Value |
+|---|------:|
+| Frame median | 60.9 ms |
+| Detect median | 52.1 ms |
+| Ego-motion failures | 0 |
+
+Capture, inference, weighted box fusion, ByteTrack association, ego-motion
+compensation, movement classification and the JSONL emitter all run together
+on a live stream without stalling. Every one of those had been exercised only
+on recorded files.
+
+**It does not validate detection accuracy, geolocation accuracy, or anything
+about altitude.** Those need the thermal camera and an airframe. Geolocation
+is disabled outright, because it needs MAVLink attitude and altitude and a
+laptop on a desk has neither.
+
+### A bug the trial found
+
+`open_source` computed `fps = capture.get(CAP_PROP_FPS) or 30.0`. A file
+reports a real frame rate, so this was correct for every test so far. **A
+webcam reports -1**, and -1 is truthy, so the fallback never fired and a
+negative frame rate propagated into the video writer and every rate
+calculation. Fixed to test for a positive value.
+
+That is a small bug, and it is the kind only a live sensor produces. It is a
+preview of what the real camera will surface.
+
+---
+
+## 48. Repository Audit
+
+Forty-five scripts had accumulated, and the criterion usually used for pruning
+- "is it referenced in the documentation?" - was useless here, because the
+training log cites every script as the record of how a result was produced.
+Deleting a script that produced a documented number breaks the reproducibility
+of that number.
+
+So the criterion used instead was **supersession**: a script is removable only
+if another script can reproduce its result, not merely do something similar.
+
+### Removed
+
+| Script | Superseded by |
+|--------|---------------|
+| `analyze_mt005_test_errors.py` | `evaluate_experiment.py --labels` |
+| `analyze_mt005_test_errors_conf010.py` | the same, `--conf 0.10` |
+| `analyze_mt006_test_errors.py` | the same |
+| `analyze_mt007_test_errors.py` | the same |
+| `analyze_mt005_remaining_misses.py` | `evaluate_experiment.py` mechanism breakdown |
+| `compare_mt005_vs_mt007.py` | `compare_mt005_vs_mt007_conf010.py` |
+| `compare_mt005_confidence.py` | `single_model_wbf.py --sweep-conf`, `operating_point.py` |
+
+The four `analyze_*_test_errors` files were **249 lines each, and after
+normalising the model name `analyze_mt006` differs from `analyze_mt005` by
+zero lines.** One script, pasted four times, each copy hardcoding a different
+model. `evaluate_experiment.py` takes `--labels` and `--conf` and reports a
+strict superset - it adds blind images, small-person recall and the five-way
+failure-mechanism breakdown.
+
+The other three have no argument parsing at all; every path and threshold is
+hardcoded. Each has a parameterised successor.
+
+About 1,700 lines removed, and no script imports any of them.
+
+### Kept, despite looking removable
+
+`test_tiled_inference.py` and `compare_standard_vs_tiled.py` are 639 lines
+supporting a technique that was rejected. They are the method record for a
+documented negative result - tiled inference found 87 fewer people and 485
+fewer false positives - and nothing else can reproduce it. A rejected
+experiment still needs its method kept, or the rejection becomes an assertion.
+
+### Renamed
+
+`train_mt008.py` to `train_experiment.py`. It began as the MT-008 mosaic
+ablation and ended up training MT-008 through MT-013 and MT-011b, gaining
+flags for dataset, loss weights, starting weights, architecture, NWD blending
+and seed. The name had stopped describing it.
+
+### .gitignore
+
+It listed output directories individually - `results/benchmark/`,
+`results/test_sequence/`, and so on - which meant every new script needed a
+matching entry and silently did not get one. **Ten result directories were
+neither tracked nor ignored.**
+
+Replaced with directory-wide rules: everything under `results/` is ignored
+except the README that says which script produces what, and the dataset rules
+keep `data.yaml` while ignoring the data. `.claude/` is now ignored too, since
+Git worktrees live there.
+
+Verified by construction rather than by inspection: each rule was checked with
+`git check-ignore`, and `git ls-files | git check-ignore --stdin` confirms no
+currently-tracked file became ignored.

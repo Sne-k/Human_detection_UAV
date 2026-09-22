@@ -45,6 +45,7 @@ import argparse
 import json
 import os
 import statistics
+import signal
 import sys
 import time
 from collections import deque
@@ -72,7 +73,21 @@ MODEL_SHAPES = {
     "MT-008": (512, 640),
     "MT-009": (512, 640),
     "MT-010": (512, 640),
+    "MT-011": (512, 640),
+    "MT-011b": (512, 640),
+    "MT-012": (512, 640),
+    "MT-013": (512, 640),
 }
+
+# The thermal detector to deploy. MT-011b is MT-011's seed repeat; both beat
+# MT-005 at every mission cost ratio (training_log.md sections 40 and 45).
+# They are the same configuration, so this picks one rather than selecting the
+# better test-set score, which would be fitting the test split.
+DEFAULT_THERMAL = "MT-011b"
+
+# The RGB reference. Not a search detector - it exists for delivery-zone
+# confirmation, and it is the only model here trained on visible light.
+DEFAULT_RGB = "MT-004"
 
 CONF = 0.25
 NMS_IOU = 0.70
@@ -553,6 +568,40 @@ def main():
     frame_index = 0
     started = time.perf_counter()
 
+    # A live camera never ends, and the `q` shortcut only fires when the
+    # OpenCV window has keyboard focus. Without this, an unfocused or
+    # unrendered window leaves no way out except killing the process, which
+    # discards the run summary the trial exists to produce.
+    stop = {"requested": False}
+
+    def _on_interrupt(_signum, _frame):
+        if stop["requested"]:
+            raise KeyboardInterrupt
+
+        stop["requested"] = True
+
+        print()
+        print("interrupt received - finishing this frame, then writing the "
+              "summary")
+        print("press Ctrl+C again to abort without one")
+
+    # SIGBREAK as well as SIGINT: on Windows, Ctrl+Break and a signal sent to
+    # a detached process group arrive as SIGBREAK, and Ctrl+C is ignored
+    # outright by groups created with CREATE_NEW_PROCESS_GROUP.
+    previous_handlers = []
+
+    for name in ("SIGINT", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+
+        if sig is None:
+            continue
+
+        try:
+            previous_handlers.append((sig, signal.signal(sig, _on_interrupt)))
+        except (ValueError, OSError, AttributeError):
+            # Not on the main thread, or unsupported on this platform.
+            pass
+
     for frame in frames:
         frame_start = time.perf_counter()
 
@@ -653,6 +702,7 @@ def main():
                         1 for r in records if r["state"] == "moving"
                     ),
                     "fps": instant_fps,
+                    "conf": args.conf,
                 },
             )
 
@@ -674,7 +724,16 @@ def main():
         if args.max_frames and frame_index >= args.max_frames:
             break
 
+        if stop["requested"]:
+            break
+
     elapsed = time.perf_counter() - started
+
+    for sig, handler in previous_handlers:
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass
 
     if writer is not None:
         writer.release()
@@ -737,11 +796,38 @@ def annotate(frame, records, stats):
 
         label = f"#{record['track_id']} {state[:4]}"
 
+        # The detector score. It is NOT a calibrated probability that the box
+        # contains a person - a network trained with cross-entropy is free to
+        # be confidently wrong. What it is reliably good for is *ranking*, and
+        # the measured precision at each operating point is in
+        # training_log.md section 37.
+        confidence = record.get("confidence")
+
+        if confidence is not None:
+            label += f" {confidence * 100:.0f}%"
+
         if record.get("ground"):
             label += f" +/-{record['ground']['position_error_m']:.0f}m"
 
+        origin = (x1, max(12, y1 - 4))
+
+        # A dark plate behind the text. Without it the label vanishes against
+        # a bright background, which is exactly what a sunlit scene gives -
+        # and the grey used for edge-state tracks is the worst case.
+        (text_w, text_h), _ = cv2.getTextSize(
+            label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1
+        )
+
+        cv2.rectangle(
+            frame,
+            (origin[0], origin[1] - text_h - 3),
+            (origin[0] + text_w + 3, origin[1] + 3),
+            (0, 0, 0),
+            -1,
+        )
+
         cv2.putText(
-            frame, label, (x1, max(12, y1 - 4)),
+            frame, label, origin,
             cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA,
         )
 
@@ -749,6 +835,9 @@ def annotate(frame, records, stats):
         f"frame {stats['frame']}  persons {stats['persons']}  "
         f"moving {stats['moving']}  {stats['fps']:.1f} FPS"
     )
+
+    if stats.get("conf") is not None:
+        banner += f"  conf>={stats['conf']:.2f}"
 
     cv2.rectangle(frame, (0, 0), (frame.shape[1], 20), (0, 0, 0), -1)
 

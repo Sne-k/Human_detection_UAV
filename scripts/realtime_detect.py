@@ -310,10 +310,17 @@ def open_source(source):
     if not capture.isOpened():
         raise SystemExit(f"Could not open source: {source}")
 
-    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    # A live camera commonly reports -1 or 0 for these. `or 30.0` does not
+    # catch -1, because -1 is truthy, so a webcam would silently propagate a
+    # negative frame rate into the video writer and every rate calculation.
+    reported_fps = capture.get(cv2.CAP_PROP_FPS)
+    fps = reported_fps if reported_fps and reported_fps > 0 else 30.0
+
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+
+    reported_total = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+    total = int(reported_total) if reported_total and reported_total > 0 else 0
 
     def frames():
         try:
@@ -349,12 +356,41 @@ def annotate(frame, records, stats):
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
 
-        label = f"#{record['track_id']} {record['state'][:4]}"
+        # The detector score, shown as a percentage. It is NOT a calibrated
+        # probability that the box contains a person - see the note in
+        # docs/realtime_pipeline.md. What it is good for is ranking: a 0.90
+        # box is more reliable than a 0.30 one, and the measured precision at
+        # each operating point is in training_log.md section 37.
+        confidence = record.get("confidence")
+
+        if confidence is None:
+            label = f"#{record['track_id']} {record['state'][:4]}"
+        else:
+            label = (
+                f"#{record['track_id']} {record['state'][:4]} "
+                f"{confidence * 100:.0f}%"
+            )
+
+        origin = (x1, max(12, y1 - 4))
+
+        # A dark plate behind the text, so the label stays readable over a
+        # bright or noisy background rather than disappearing into it.
+        (text_w, text_h), _ = cv2.getTextSize(
+            label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1
+        )
+
+        cv2.rectangle(
+            frame,
+            (origin[0], origin[1] - text_h - 2),
+            (origin[0] + text_w + 2, origin[1] + 2),
+            (0, 0, 0),
+            -1,
+        )
 
         cv2.putText(
             frame,
             label,
-            (x1, max(12, y1 - 4)),
+            origin,
             cv2.FONT_HERSHEY_SIMPLEX,
             0.4,
             color,
@@ -368,6 +404,9 @@ def annotate(frame, records, stats):
         f"moving {stats['moving']}  "
         f"{stats['fps']:.1f} FPS"
     )
+
+    if stats.get("conf") is not None:
+        banner += f"  conf>={stats['conf']:.2f}"
 
     cv2.rectangle(frame, (0, 0), (frame.shape[1], 20), (0, 0, 0), -1)
 
