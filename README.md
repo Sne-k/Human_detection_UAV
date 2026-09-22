@@ -54,6 +54,33 @@ target board has no headroom for. Single-model fusion sheds seven times more
 false positives than the ensemble, for nothing. See
 [`docs/training_log.md`](docs/training_log.md) section 36.
 
+### MT-011: aerial pretraining, and a result that was nearly missed
+
+Starting from VisDrone-pretrained weights instead of COCO costs **nothing** at
+inference - same architecture, same graph, same latency. On the conventional
+metric it looks like another failure: mAP@50 0.9301 against 0.9330, six fewer
+people found at confidence 0.25.
+
+What it actually learned was **calibration**, which a fixed threshold hides by
+construction:
+
+| Conf | MT-005 found | unmatched | MT-011 found | unmatched |
+|-----:|-------------:|----------:|-------------:|----------:|
+| 0.25 | 2,426 | 490 | 2,420 | **395** |
+| 0.10 | 2,470 | 918 | 2,469 | **716** |
+| **0.05** | 2,485 | 1,338 | **2,492** | **1,005** |
+
+Appearance does not transfer between RGB and thermal, but *"this shape, at
+this scale, from this altitude, is not a person"* does. Having seen aerial
+vehicles, roads and clutter, it stops firing on their thermal analogues - so
+it can be run far more sensitively, which is what a search payload wants.
+
+**At each model's own mission-optimal threshold, MT-011 finds 22 more people
+at 9.4% lower cost**, and it wins at every missed-person cost ratio from 1:1
+to 100:1. Adopting it means also lowering the confidence threshold; the two
+are one decision. See [`docs/training_log.md`](docs/training_log.md)
+section 40.
+
 ### Against the published HIT-UAV baselines
 
 Same dataset, same splits - the only externally comparable numbers available:
@@ -158,13 +185,14 @@ python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemet
 | MT-008 | Thermal | mosaic = 0 | Rejected, merged boxes worse |
 | MT-009 | Thermal | hard-negative mining | Rejected, no measurable gain |
 | MT-010 | Thermal | box-loss weight 15.0 | Rejected, worse on every axis |
-| MT-011 | Thermal | VisDrone -> HIT-UAV transfer | Running |
+| MT-011 | Thermal | VisDrone -> HIT-UAV transfer | **Accepted** - better calibrated |
 | MT-012 | Thermal | P2 small-object head | **Vetoed on compute**, behind a decision gate |
-| MT-013 | Thermal | NWD localisation loss | Queued |
+| MT-013 | Thermal | NWD localisation loss | Running |
 
-**Eight directions tested; none improved the single-model baseline.** Model
-capacity was ruled out on compute, not accuracy: YOLO26s runs at an estimated
-1.8-2.9 FPS on the target against a 6.7 FPS requirement.
+**Nine directions tested; one improved the baseline.** MT-011 is the first,
+and it was nearly missed - see below. Model capacity was ruled out on compute,
+not accuracy: YOLO26s runs at an estimated 1.8-2.9 FPS on the target against a
+6.7 FPS requirement.
 
 The first seven all attacked target *scale* and moved no failure mechanism at
 all. MT-010 is the first that moved its target - merged boxes fell from 57 to
@@ -300,6 +328,12 @@ light-independent modality and the one that fits the compute budget. MT-004 at
 
 **Thermal sensor resolution is the binding purchase decision.** A 160 x 120
 module loses one person in three. **384 x 288 is the floor.**
+
+**Three results were hidden by defaults nobody chose.** The IoU 0.50 matching
+criterion (86 people), NMS post-processing (148 false positives) and the
+confidence 0.25 threshold (MT-011 entirely). A comparison protocol is itself a
+choice, and one fixed before the space of possible results is understood will
+eventually hide one.
 
 **Architecture changes are gated on compute before they are trained.** The
 literature's most-supported technique for small objects - a P2 detection head -

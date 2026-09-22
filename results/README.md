@@ -21,9 +21,9 @@ Datasets, model weights and generated artefacts are excluded from Git via
 | MT-008 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
 | MT-009 | Thermal | 640 | HIT-UAV + hard negatives | Completed - rejected |
 | MT-010 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
-| MT-011 | Thermal | 640 | HIT-UAV Person | Running - VisDrone transfer |
+| MT-011 | Thermal | 640 | HIT-UAV Person | Completed - **accepted** |
 | MT-012 | Thermal | 640 | HIT-UAV Person | Vetoed on compute |
-| MT-013 | Thermal | 640 | HIT-UAV Person | Queued - NWD loss |
+| MT-013 | Thermal | 640 | HIT-UAV Person | Running - NWD loss |
 
 Training runs are written by Ultralytics under
 `runs/detect/results/training/<ID>/`.
