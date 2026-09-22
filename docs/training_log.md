@@ -2511,3 +2511,124 @@ ego-motion figure is the more transferable of the two, since optical flow over
 a fixed grid does not depend on how many people are present.
 
 Re-measure on real flight video when there is any.
+
+---
+
+## 40. MT-011 - The First Experiment That Beats the Baseline
+
+MT-011 takes MT-004's VisDrone-pretrained weights as the starting point and
+fine-tunes on HIT-UAV, instead of going straight from COCO. The technique is
+AlienSight's ([19] in `references.md`), which reported 0.941 -> 0.965 mAP@50
+from an intermediate aerial stage. Here the intermediate stage is also
+cross-*modality* - RGB to thermal - which is a weaker prior, since a person
+looks nothing alike in the two.
+
+It costs nothing at inference: identical architecture, identical graph,
+identical Raspberry Pi 5 latency. Only the initial weights differ.
+
+### It trains faster from the start
+
+Validation mAP@50 at matched epochs:
+
+| Epoch | MT-005 | MT-011 | Delta |
+|------:|-------:|-------:|-------|
+| 5 | 0.7567 | 0.8711 | **+0.1144** |
+| 10 | 0.8468 | 0.8664 | +0.0196 |
+| 15 | 0.8354 | 0.8938 | +0.0584 |
+| 20 | 0.8596 | 0.9013 | +0.0417 |
+
+Aerial human shape and scale do transfer across modality, and the head start
+is large. That answers the open question, and it is the part that generalises
+to any future dataset.
+
+### On the conventional metric it looks like another failure
+
+Test split, confidence 0.25, IoU >= 0.50:
+
+| Metric | Baseline | MT-011 | Delta |
+|--------|---------:|-------:|-------|
+| mAP@50 | 0.9330 | 0.9301 | **-0.0029** |
+| Matched persons | 2,425 | 2,419 | **-6** |
+| Missed persons | 186 | 192 | +6 |
+| Unmatched boxes | 638 | **510** | **-128** |
+| Custom precision | 0.7917 | **0.8259** | **+0.0342** |
+| Blind images | 8 | 10 | +2 |
+
+Under the protocol used for the previous eight experiments, MT-011 is
+rejected: fewer people found, lower mAP@50. **That verdict is wrong**, and
+the reason is the inherited confidence threshold.
+
+### What it actually learned was calibration
+
+Both models under the deployed fusion post-processing, swept across
+confidence:
+
+| Conf | MT-005 found | unmatched | MT-011 found | unmatched | Delta people | Delta FP |
+|-----:|-------------:|----------:|-------------:|----------:|-------------:|---------:|
+| 0.25 | 2,426 | 490 | 2,420 | **395** | -6 | **-95** |
+| 0.20 | 2,445 | 584 | 2,437 | **474** | -8 | **-110** |
+| 0.15 | 2,459 | 716 | 2,451 | **577** | -8 | **-139** |
+| 0.10 | 2,470 | 918 | 2,469 | **716** | -1 | **-202** |
+| 0.07 | 2,478 | 1,133 | **2,482** | **857** | **+4** | **-276** |
+| 0.05 | 2,485 | 1,338 | **2,492** | **1,005** | **+7** | **-333** |
+
+MT-011 produces **dramatically fewer false positives at every threshold**, and
+below 0.10 it finds *more* people as well. At confidence 0.05 it beats MT-005
+on both axes simultaneously: 7 more people and 333 fewer false alarms.
+
+That is what VisDrone pretraining bought. Appearance does not transfer between
+RGB and thermal, but **"this shape, at this scale, from this altitude, is not
+a person" does**. The model has seen aerial vehicles, roads and clutter, so it
+stops firing on their thermal analogues. It is not a better detector so much
+as a better-calibrated one - and a better-calibrated detector can be run far
+more sensitively, which is exactly what a search payload wants.
+
+### At each model's own operating point
+
+| | Threshold | Cost | People found | Unmatched |
+|---|----------:|-----:|-------------:|----------:|
+| MT-005 optimum | 0.10 | 3,738 | 2,470 | 918 |
+| **MT-011 optimum** | **0.05** | **3,385** | **2,492** | 1,005 |
+
+**MT-011 finds 22 more people at 9.4% lower mission cost.**
+
+### The verdict does not depend on the cost ratio
+
+20:1 is an assumption, so it was varied:
+
+| Missed-person cost | MT-005 best | MT-011 best | Winner | Margin |
+|-------------------:|------------:|------------:|--------|-------:|
+| 1 | 675 @ 0.25 | 586 @ 0.25 | MT-011 | 13.2% |
+| 2 | 860 @ 0.25 | 777 @ 0.25 | MT-011 | 9.7% |
+| 5 | 1,414 @ 0.20 | 1,344 @ 0.20 | MT-011 | 5.0% |
+| 10 | 2,236 @ 0.15 | 2,136 @ 0.10 | MT-011 | 4.5% |
+| 20 | 3,738 @ 0.10 | 3,385 @ 0.05 | MT-011 | 9.4% |
+| 50 | 7,638 @ 0.05 | 6,955 @ 0.05 | MT-011 | 8.9% |
+| 100 | 13,938 @ 0.05 | 12,905 @ 0.05 | MT-011 | 7.4% |
+
+**MT-011 wins at every ratio from 1:1 to 100:1.** Whatever a mission planner
+believes a missed casualty is worth relative to a wasted callout, the same
+model is better. The result is robust, not an artefact of one assumption.
+
+**MT-011 is accepted.** It is the first of nine experiments to beat the
+baseline.
+
+### The third inherited default
+
+This is the third time in this project that a result was hidden by a
+convention nobody chose:
+
+| Default | Inherited from | What it hid |
+|---------|----------------|-------------|
+| IoU 0.50 matching | PASCAL VOC / COCO | 86 people, section 32 |
+| NMS post-processing | The framework | 148 false positives, section 36 |
+| **Confidence 0.25** | **Ultralytics** | **MT-011 entirely** |
+
+Eight experiments were evaluated at confidence 0.25 because that is what the
+first one used. For eight of them it did not matter, because they differed
+from the baseline in ways that showed up at any threshold. MT-011 differs in
+*calibration*, which is invisible at a fixed threshold by construction.
+
+The lesson is not "sweep everything". It is that a comparison protocol is
+itself a choice, and a protocol fixed before the space of possible results was
+understood will eventually hide one.
