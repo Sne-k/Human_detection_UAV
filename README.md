@@ -272,6 +272,8 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `ensemble_detect.py` | Ensemble inference with per-stage timing |
 | `single_model_wbf.py` | Fusion vs suppression on one model, the free precision gain |
 | `geolocate.py` | Pixel detections to ground coordinates |
+| `webcam_trial.py` | Live-camera trial, explicit about what it can and cannot validate |
+| `verify_deployed_config.py` | Runs the assembled payload and checks it reproduces the parts |
 
 ### Dataset preparation
 
@@ -378,6 +380,9 @@ ego-motion add 22% on top of inference, measured end to end. See
 - **No hardware.** Every deployment figure is extrapolated from x86.
 - **No real flight video.** Tracking and movement are validated on a
   synthetic sequence with one moving target.
+  A live-camera trial exists (`scripts/webcam_trial.py`) but the webcam is
+  visible light while the detector is thermal, so it validates the pipeline,
+  not detection.
 - **No smoke or fog data.** Obscurant penetration is inferred from LWIR
   physics, not measured.
 - **RGB and thermal metrics are not comparable** - unrelated datasets.

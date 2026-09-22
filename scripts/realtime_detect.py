@@ -310,10 +310,17 @@ def open_source(source):
     if not capture.isOpened():
         raise SystemExit(f"Could not open source: {source}")
 
-    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    # A live camera commonly reports -1 or 0 for these. `or 30.0` does not
+    # catch -1, because -1 is truthy, so a webcam would silently propagate a
+    # negative frame rate into the video writer and every rate calculation.
+    reported_fps = capture.get(cv2.CAP_PROP_FPS)
+    fps = reported_fps if reported_fps and reported_fps > 0 else 30.0
+
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+
+    reported_total = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+    total = int(reported_total) if reported_total and reported_total > 0 else 0
 
     def frames():
         try:

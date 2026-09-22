@@ -72,7 +72,21 @@ MODEL_SHAPES = {
     "MT-008": (512, 640),
     "MT-009": (512, 640),
     "MT-010": (512, 640),
+    "MT-011": (512, 640),
+    "MT-011b": (512, 640),
+    "MT-012": (512, 640),
+    "MT-013": (512, 640),
 }
+
+# The thermal detector to deploy. MT-011b is MT-011's seed repeat; both beat
+# MT-005 at every mission cost ratio (training_log.md sections 40 and 45).
+# They are the same configuration, so this picks one rather than selecting the
+# better test-set score, which would be fitting the test split.
+DEFAULT_THERMAL = "MT-011b"
+
+# The RGB reference. Not a search detector - it exists for delivery-zone
+# confirmation, and it is the only model here trained on visible light.
+DEFAULT_RGB = "MT-004"
 
 CONF = 0.25
 NMS_IOU = 0.70
