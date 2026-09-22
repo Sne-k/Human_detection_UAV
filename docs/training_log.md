@@ -3046,3 +3046,125 @@ took here to establish the same thing.
 
 Section 43 made the same point about spending a run on a hypothesis before
 checking the code. This is the data-side version.
+
+---
+
+## 45. MT-011b - The Noise Floor, and What It Costs the Rest of This Log
+
+MT-011 became the only accepted experiment in this project and a deployment
+recommendation, on the strength of a single training run. MT-011b repeats it
+with **seed 1 instead of seed 0 and nothing else changed**. The difference
+between the two is, by construction, run-to-run variation.
+
+It should have been measured nine experiments ago.
+
+### The finding replicates - and strengthens
+
+| | mAP@50 | vs baseline |
+|---|------:|------------:|
+| MT-005 baseline | 0.9330 | - |
+| MT-011 (seed 0) | 0.9301 | **-0.0029** |
+| **MT-011b (seed 1)** | **0.9352** | **+0.0022** |
+
+Mission cost at each model's own optimum:
+
+| Model | Conf | Cost | People found | vs MT-005 |
+|-------|-----:|-----:|-------------:|----------:|
+| MT-005 | 0.10 | 3,738 | 2,470 | - |
+| MT-011 | 0.05 | 3,385 | 2,492 | **+9.4%** |
+| **MT-011b** | **0.05** | **3,188** | **2,513** | **+14.7%** |
+
+| Miss cost | MT-005 | MT-011 | MT-011b | MT-012 | MT-013 | Winner |
+|----------:|-------:|-------:|--------:|-------:|-------:|--------|
+| 1 | 675 | **586** | 627 | 696 | 636 | MT-011 |
+| 5 | 1,414 | **1,344** | 1,351 | 1,464 | 1,460 | MT-011 |
+| 20 | 3,738 | 3,385 | **3,188** | 3,746 | 3,686 | MT-011b |
+| 100 | 13,938 | 12,905 | **11,028** | 13,066 | 14,170 | MT-011b |
+
+**Both seeds beat MT-005 at every cost ratio tested.** The two-stage aerial
+pretraining result is real. That is the conclusion that matters, and it
+survives.
+
+### But the spread is larger than most of this log's deltas
+
+Same configuration, different seed:
+
+| Conf | MT-011 matched | MT-011b matched | Spread | MT-011 unmatched | MT-011b unmatched | Spread |
+|-----:|---------------:|----------------:|-------:|-----------------:|------------------:|-------:|
+| 0.25 | 2,420 | 2,430 | **+10** | 395 | 446 | +51 |
+| 0.15 | 2,451 | 2,471 | **+20** | 577 | 690 | +113 |
+| 0.05 | 2,492 | 2,513 | **+21** | 1,005 | 1,228 | +223 |
+
+**mAP@50 varies by 0.0051 between seeds of an identical configuration.**
+
+Set every experiment's headline delta against that:
+
+| Experiment | Delta mAP@50 vs baseline | As a multiple of the seed spread | Survives? |
+|------------|-------------------------:|---------------------------------:|-----------|
+| MT-013 (NWD) | -0.0006 | **0.1x** | **No - deep inside noise** |
+| MT-011 | -0.0029 | 0.6x | No - inside noise |
+| MT-011b | +0.0022 | 0.4x | No - inside noise |
+| MT-012 (P2) | -0.0080 | 1.6x | Marginal |
+| MT-010 (box loss) | -0.0084 | 1.6x | Marginal |
+
+**On mAP@50 alone, not one experiment in this project is cleanly outside the
+noise floor.** Two are marginal at 1.6x, and 1.6x from a sample of two is not
+a confident separation.
+
+### What this does and does not invalidate
+
+It would be easy to conclude that nothing here means anything. That is too
+strong, and the reason is worth stating precisely.
+
+**A single-number comparison is noise-dominated.** Every "rejected on mAP@50"
+verdict in this log should be read as "not distinguishable from the baseline",
+not as "worse". MT-013 in particular was rejected on a difference of 0.0006,
+which is a tenth of the measured spread. **That rejection is not supported by
+the evidence and is withdrawn** - NWD in the loss is untested-in-effect, not
+refuted. Sections 41 and 44 stand for different reasons: the assigner and
+clustering results are measurements of mechanism, not of accuracy, and neither
+depends on a single training run.
+
+**A swept comparison is not noise-dominated.** The mission-cost analysis
+evaluates each model at six confidence thresholds against seven cost ratios -
+42 comparisons per model, on the same fixed test split. Both MT-011 seeds beat
+MT-005 in all of them. A consistent direction across 42 paired comparisons is
+a far stronger signal than one number, and it is why the MT-011 conclusion
+survives while its magnitude does not: the effect is real, **the size of it is
+uncertain between 9.4% and 14.7%.**
+
+**Post-processing results are unaffected.** Section 36's weighted box fusion
+gain, 148 fewer false positives, involves no training at all. The same cached
+network output feeds both arms, so there is no seed and no variance. The same
+is true of section 43's anchor count and section 44's clustering comparison.
+**The two largest free wins in this project are the two that carry no
+training noise**, which is not a coincidence - they were measured rather than
+trained.
+
+### The mistake, plainly
+
+Eleven training runs were compared against a baseline without ever measuring
+how much two identical runs differ. Every verdict was issued against an
+unknown noise floor. That is the single largest methodological error in this
+project, it was cheap to avoid - one extra run, at any point - and it was not
+avoided until the twelfth.
+
+The reason it went unnoticed is ordinary: the first few experiments produced
+large, consistent differences (RGB 640 to 1280 moved mAP@50 by 0.15), so
+precision never seemed to be the binding issue. By the time the differences
+had shrunk to thousandths, the habit of reading them as signal was already
+established.
+
+### What follows
+
+1. **Report MT-011's advantage as a range, 9.4% to 14.7%**, never as a point.
+2. **Withdraw the MT-013 rejection.** State it as indistinguishable from the
+   baseline. Section 44's mechanistic argument for why NWD cannot help here is
+   independent of this and still stands.
+3. **Treat MT-010 and MT-012 as unresolved rather than rejected** on accuracy
+   grounds. MT-012's rejection on *compute* is unaffected - 1.3-1.5x inference
+   is a measurement, not a training outcome, and that alone settles it.
+4. **Any future experiment claiming a difference below about 0.01 mAP@50 needs
+   a seed repeat before the claim is made**, not after.
+5. Prefer swept, paired comparisons over single numbers wherever a decision
+   rests on them.

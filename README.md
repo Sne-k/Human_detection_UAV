@@ -75,11 +75,16 @@ this scale, from this altitude, is not a person"* does. Having seen aerial
 vehicles, roads and clutter, it stops firing on their thermal analogues - so
 it can be run far more sensitively, which is what a search payload wants.
 
-**At each model's own mission-optimal threshold, MT-011 finds 22 more people
-at 9.4% lower cost**, and it wins at every missed-person cost ratio from 1:1
-to 100:1. Adopting it means also lowering the confidence threshold; the two
-are one decision. See [`docs/training_log.md`](docs/training_log.md)
-section 40.
+**At each model's own mission-optimal threshold, MT-011 finds more people at
+9.4-14.7% lower cost**, and both seeds win at every missed-person cost ratio
+from 1:1 to 100:1. Adopting it means also lowering the confidence threshold;
+the two are one decision. See [`docs/training_log.md`](docs/training_log.md)
+sections 40 and 45.
+
+The range is not hedging. A seed repeat (MT-011b, identical but for the seed)
+measured the noise floor at **0.0051 mAP@50** - larger than most of this
+project's headline deltas. The MT-011 *direction* survives, because it is
+consistent across 42 paired comparisons; its *magnitude* is uncertain.
 
 ### Against the published HIT-UAV baselines
 
@@ -186,7 +191,8 @@ python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemet
 | MT-009 | Thermal | hard-negative mining | Rejected, no measurable gain |
 | MT-010 | Thermal | box-loss weight 15.0 | Rejected, worse on every axis |
 | MT-011 | Thermal | VisDrone -> HIT-UAV transfer | **Accepted** - better calibrated |
-| MT-013 | Thermal | NWD localisation loss | Rejected, did not move its target |
+| MT-013 | Thermal | NWD localisation loss | Indistinguishable from baseline |
+| MT-011b | Thermal | MT-011 seed repeat | **Noise floor: 0.0051 mAP@50** |
 | MT-012 | Thermal | P2 small-object head | Rejected on compute **and** accuracy |
 
 **Eleven directions tested; one improved the baseline.** MT-011 is the only
@@ -336,6 +342,13 @@ light-independent modality and the one that fits the compute budget. MT-004 at
 
 **Thermal sensor resolution is the binding purchase decision.** A 160 x 120
 module loses one person in three. **384 x 288 is the floor.**
+
+**Eleven runs were compared before anyone measured the noise floor.** A seed
+repeat put it at 0.0051 mAP@50, which is larger than most of the deltas this
+project had been reading as signal. Single-number verdicts below that are
+withdrawn; swept comparisons across thresholds and cost ratios survive, and so
+do the post-processing results, which involve no training and therefore no
+variance. See [`docs/training_log.md`](docs/training_log.md) section 45.
 
 **Three results were hidden by defaults nobody chose.** The IoU 0.50 matching
 criterion (86 people), NMS post-processing (148 false positives) and the
