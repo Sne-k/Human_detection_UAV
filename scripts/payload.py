@@ -702,6 +702,7 @@ def main():
                         1 for r in records if r["state"] == "moving"
                     ),
                     "fps": instant_fps,
+                    "conf": args.conf,
                 },
             )
 
@@ -795,11 +796,38 @@ def annotate(frame, records, stats):
 
         label = f"#{record['track_id']} {state[:4]}"
 
+        # The detector score. It is NOT a calibrated probability that the box
+        # contains a person - a network trained with cross-entropy is free to
+        # be confidently wrong. What it is reliably good for is *ranking*, and
+        # the measured precision at each operating point is in
+        # training_log.md section 37.
+        confidence = record.get("confidence")
+
+        if confidence is not None:
+            label += f" {confidence * 100:.0f}%"
+
         if record.get("ground"):
             label += f" +/-{record['ground']['position_error_m']:.0f}m"
 
+        origin = (x1, max(12, y1 - 4))
+
+        # A dark plate behind the text. Without it the label vanishes against
+        # a bright background, which is exactly what a sunlit scene gives -
+        # and the grey used for edge-state tracks is the worst case.
+        (text_w, text_h), _ = cv2.getTextSize(
+            label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1
+        )
+
+        cv2.rectangle(
+            frame,
+            (origin[0], origin[1] - text_h - 3),
+            (origin[0] + text_w + 3, origin[1] + 3),
+            (0, 0, 0),
+            -1,
+        )
+
         cv2.putText(
-            frame, label, (x1, max(12, y1 - 4)),
+            frame, label, origin,
             cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA,
         )
 
@@ -807,6 +835,9 @@ def annotate(frame, records, stats):
         f"frame {stats['frame']}  persons {stats['persons']}  "
         f"moving {stats['moving']}  {stats['fps']:.1f} FPS"
     )
+
+    if stats.get("conf") is not None:
+        banner += f"  conf>={stats['conf']:.2f}"
 
     cv2.rectangle(frame, (0, 0), (frame.shape[1], 20), (0, 0, 0), -1)
 
