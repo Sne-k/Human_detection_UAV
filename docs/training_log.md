@@ -2947,3 +2947,102 @@ It also corrects a mistake already committed to this log. The assigner
 explanation was written confidently in two sections and it was wrong. It
 stands there still, flagged, because a record that shows where the reasoning
 went astray is worth more than one that reads as though it never did.
+
+---
+
+## 44. NWD Closed in All Three Places, and Why
+
+Wang et al. ([13]) embed Normalized Wasserstein Distance in three places: the
+loss, the assigner, and non-maximum suppression. This project has now tested
+all three.
+
+| Insertion point | How tested | Result |
+|-----------------|------------|--------|
+| **Loss** | MT-013, full training run | No effect. Near-miss gap 76 vs 75 |
+| **Assigner** | Measurement, section 43 | Ruled out - topk 10, pool ~6, nothing to rank |
+| **Clustering / NMS** | Offline, this section | Equivalent to IoU |
+
+### The clustering test
+
+WBF clusters overlapping boxes by IoU at 0.60. Swapping the similarity to NWD
+costs nothing - it happens after the forward pass, needs no training, and does
+not change inference cost. The same cached boxes feed both, so only the
+similarity differs.
+
+IoU and NWD thresholds are not comparable as numbers, so each row is reported
+with the pixel offset it corresponds to for the median 12 x 19 px person:
+
+| Metric | Threshold | ~px | Matched | Unmatched | Precision |
+|--------|----------:|----:|--------:|----------:|----------:|
+| IoU | 0.70 | 2.1 | 2,433 | 630 | 0.7943 |
+| NWD | 0.85 | 2.6 | 2,436 | 639 | 0.7922 |
+| IoU | 0.60 | 3.0 | 2,426 | **490** | 0.8320 |
+| NWD | 0.80 | 3.6 | 2,428 | 509 | 0.8267 |
+| IoU | 0.50 | 4.0 | 2,421 | 439 | 0.8465 |
+| NWD | 0.75 | 4.6 | 2,421 | 460 | 0.8403 |
+
+**The two curves lie on top of each other.** At matched pixel tolerance NWD
+finds two or three more boxes and produces a few more false positives. Neither
+dominates. There is no configuration of NWD clustering that beats IoU
+clustering at 0.60.
+
+### Why - and this is predictable in advance
+
+For two boxes of **equal size**, both IoU and NWD are monotone decreasing
+functions of displacement. Thresholding a monotone function is the same
+decision whichever function you pick: only the threshold value changes.
+
+So NWD can only make a different *decision* from IoU when boxes differ in size
+or aspect. How much do they differ here?
+
+| | p05 | p25 | median | p75 | p95 |
+|---|----:|----:|-------:|----:|----:|
+| Box size, sqrt(w*h) px | 10.0 | 12.4 | **15.1** | 18.7 | 24.4 |
+
+**p95 / p05 = 2.44x**, standard deviation 28% of the mean. HIT-UAV is very
+nearly a single-scale dataset - which follows from how it was captured, a
+fixed sensor at 60-130 m photographing objects of one physical size.
+
+The consequence, spelled out:
+
+| Box | IoU 0.60 tolerance | NWD 0.80 tolerance |
+|-----|-------------------:|-------------------:|
+| p05, 7.9 x 12.6 px | 1.99 px | 3.55 px (fixed) |
+| median, 12.0 x 19.0 px | 3.00 px | 3.55 px (fixed) |
+| p95, 19.4 x 30.7 px | 4.84 px | 3.55 px (fixed) |
+
+NWD applies one pixel tolerance to every box; IoU applies a size-proportional
+one. On a population this tightly concentrated, most boxes sit near the median
+where the two agree, and the disagreement at the tails is too rare to move the
+totals.
+
+### What that says about the loss result too
+
+It reframes MT-013. NWD's advertised benefit is usually stated as "IoU
+collapses for tiny objects" - but collapse in *value* only matters where the
+value is used as a **gradient**. Where it is used as a **decision** - which
+anchor to assign, which boxes to cluster - monotonicity is all that matters,
+and IoU is monotone.
+
+That leaves the loss as the only place NWD could have helped, and MT-013
+tested it directly. Its likely reason for failing is separate: Ultralytics
+localises primarily through the distribution focal loss on box distances, and
+the IoU term the patch modified is one of two localisation terms rather than
+the dominant one.
+
+### The honest generalisation
+
+**NWD is a solution to a problem HIT-UAV does not have.** The papers reporting
+gains from it ([14]-[18]) train on mixed or multi-scale collections where IoU
+tolerance genuinely varies across the object population. This dataset spans
+2.44x.
+
+That is worth recording as a transferable lesson rather than as a failed
+experiment. A technique's published gain is a property of the technique **and**
+the data it was demonstrated on, and the second half is usually left implicit.
+Checking whether the target dataset exhibits the condition a technique
+addresses costs one histogram - considerably less than the three attempts it
+took here to establish the same thing.
+
+Section 43 made the same point about spending a run on a hypothesis before
+checking the code. This is the data-side version.

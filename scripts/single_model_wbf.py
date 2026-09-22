@@ -37,6 +37,7 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import statistics
 import sys
@@ -120,7 +121,49 @@ def iou(a, b):
     return inter / union if union > 0 else 0.0
 
 
-def cluster(boxes, scores, threshold):
+# Mean sqrt(w*h) over the HIT-UAV train split, in pixels. Same constant as
+# nwd_loss.py, so the two uses of NWD in this project are directly comparable.
+NWD_C = 15.93
+
+
+def nwd(a, b, constant=NWD_C):
+    """
+    Normalized Wasserstein similarity between two xyxy boxes, in [0, 1].
+
+    Wang et al. embed NWD in three places: the loss, the assigner, and NMS.
+    MT-013 tested the loss and it did nothing; section 43 ruled out the
+    assigner by measurement. This is the third place, and it is the cheapest
+    of the three to test - clustering happens after the forward pass, so it
+    needs no training and costs nothing at inference.
+
+    The difference from IoU is scale behaviour. IoU is relative to box size,
+    so a fixed threshold means a different pixel tolerance for a large box
+    than a small one. NWD is absolute: a threshold corresponds to a distance
+    in pixels regardless of how big the boxes are. For a population that
+    spans 12 x 19 px up to much larger targets, those are genuinely different
+    clustering rules.
+    """
+
+    aw, ah = a[2] - a[0], a[3] - a[1]
+    bw, bh = b[2] - b[0], b[3] - b[1]
+
+    dcx = (a[0] + a[2]) * 0.5 - (b[0] + b[2]) * 0.5
+    dcy = (a[1] + a[3]) * 0.5 - (b[1] + b[3]) * 0.5
+
+    squared = dcx * dcx + dcy * dcy + ((aw - bw) ** 2 + (ah - bh) ** 2) * 0.25
+
+    return math.exp(-math.sqrt(max(squared, 1e-12)) / constant)
+
+
+METRICS = {"iou": iou, "nwd": nwd}
+
+# NWD thresholds chosen so the pixel tolerances bracket the IoU sweep. For a
+# 12 x 19 px box, IoU 0.70/0.60/0.50 correspond to about 2.3/3.2/4.0 px, and
+# NWD 0.90/0.80/0.75 to about 1.7/3.6/4.6 px.
+NWD_THRESHOLDS = [0.92, 0.90, 0.85, 0.80, 0.75, 0.70, 0.60]
+
+
+def cluster(boxes, scores, threshold, metric=iou):
     """Greedy clustering seeded on the highest-confidence box."""
 
     order = sorted(range(len(boxes)), key=lambda i: -scores[i])
@@ -135,7 +178,7 @@ def cluster(boxes, scores, threshold):
         leftover = []
 
         for index in remaining:
-            if iou(boxes[seed], boxes[index]) >= threshold:
+            if metric(boxes[seed], boxes[index]) >= threshold:
                 group.append(index)
             else:
                 leftover.append(index)
@@ -146,21 +189,21 @@ def cluster(boxes, scores, threshold):
     return clusters
 
 
-def suppress(boxes, scores, threshold):
+def suppress(boxes, scores, threshold, metric=iou):
     """NMS: keep the cluster seed, discard the rest. The current behaviour."""
 
     return [
         (boxes[group[0]], scores[group[0]], len(group))
-        for group in cluster(boxes, scores, threshold)
+        for group in cluster(boxes, scores, threshold, metric)
     ]
 
 
-def fuse(boxes, scores, threshold):
+def fuse(boxes, scores, threshold, metric=iou):
     """WBF: replace the cluster with its confidence-weighted average."""
 
     fused = []
 
-    for group in cluster(boxes, scores, threshold):
+    for group in cluster(boxes, scores, threshold, metric):
         weight = sum(scores[i] for i in group) or 1.0
 
         averaged = [
@@ -291,13 +334,13 @@ def collect(model, conf, threads=4):
     return frames, raw_total
 
 
-def score(frames, method, threshold):
+def score(frames, method, threshold, metric=iou):
     matched = unmatched = blind = truth_total = predicted = 0
 
     per_frame = []
 
     for frame in frames:
-        produced = method(frame["boxes"], frame["scores"], threshold)
+        produced = method(frame["boxes"], frame["scores"], threshold, metric)
 
         boxes = [b for b, _, _ in produced]
 
@@ -362,6 +405,122 @@ NMS_SWEEP = {
     0.15: {"missed": 157, "unmatched": 999, "matched": 2454},
     0.10: {"missed": 143, "unmatched": 1300, "matched": 2468},
 }
+
+
+def compare_metrics(frames, args):
+    """
+    Cluster by NWD instead of IoU, at matched pixel tolerances.
+
+    IoU and NWD thresholds are not comparable as numbers, so each row reports
+    the pixel offset it corresponds to for the median 12 x 19 px person. That
+    makes the two columns readable against each other: if NWD is genuinely a
+    better clustering rule, it should beat IoU at equal pixel tolerance rather
+    than merely at some threshold.
+    """
+
+    print()
+    print("=" * 78)
+    print("Clustering metric: NWD instead of IoU")
+    print("=" * 78)
+    print("Same cached boxes, same fusion, only the similarity differs.")
+    print("Pixel tolerance is for the median 12 x 19 px person.")
+    print()
+
+    header = (f"{'metric':>7s} {'thresh':>7s} {'~px':>6s} {'matched':>9s} "
+              f"{'missed':>8s} {'unmatched':>11s} {'blind':>7s} "
+              f"{'recall':>9s} {'precision':>11s}")
+    print(header)
+    print("-" * len(header))
+
+    rows = []
+
+    def iou_px(target):
+        return displacement_for_iou(target, PERSON_W, PERSON_H)
+
+    def nwd_px(target):
+        return -NWD_C * math.log(target)
+
+    for name, thresholds, to_px in (
+        ("IoU", FUSE_THRESHOLDS, iou_px),
+        ("NWD", NWD_THRESHOLDS, nwd_px),
+    ):
+        for threshold in thresholds:
+            result, _ = score(frames, fuse, threshold, METRICS[name.lower()])
+
+            result["metric"] = name
+            result["threshold"] = threshold
+            result["px"] = round(to_px(threshold), 2)
+            rows.append(result)
+
+            print(f"{name:>7s} {threshold:7.2f} {to_px(threshold):6.1f} "
+                  f"{result['matched']:9d} {result['missed']:8d} "
+                  f"{result['unmatched']:11d} {result['blind']:7d} "
+                  f"{result['recall']:9.4f} {result['precision']:11.4f}")
+
+        print()
+
+    # Best of each, judged the same way as elsewhere: beat the baseline on
+    # every axis, then prefer fewest false positives.
+    def best(metric):
+        candidates = [
+            r for r in rows
+            if r["metric"] == metric
+            and r["matched"] >= BASELINE["matched"]
+            and r["unmatched"] <= BASELINE["unmatched"]
+            and r["blind"] <= BASELINE["blind"]
+        ]
+        return min(candidates, key=lambda r: r["unmatched"]) if candidates else None
+
+    print("=" * 78)
+    print("Best configuration of each, against the frozen baseline")
+    print("=" * 78)
+    print(f"Baseline: {BASELINE['matched']} matched, {BASELINE['unmatched']} "
+          f"unmatched, precision {BASELINE['precision']:.4f}")
+    print()
+
+    for metric in ("IoU", "NWD"):
+        b = best(metric)
+
+        if b is None:
+            print(f"  {metric}: no configuration beats the baseline on every axis")
+            continue
+
+        print(f"  {metric} at {b['threshold']:.2f} (~{b['px']:.1f} px): "
+              f"{b['matched']:d} matched ({b['matched'] - BASELINE['matched']:+d}), "
+              f"{b['unmatched']:d} unmatched "
+              f"({b['unmatched'] - BASELINE['unmatched']:+d}), "
+              f"precision {b['precision']:.4f}")
+
+    bi, bn = best("IoU"), best("NWD")
+
+    print()
+
+    if bi and bn:
+        if bn["unmatched"] < bi["unmatched"] and bn["matched"] >= bi["matched"]:
+            print("  NWD clusters better. It is free, so adopt it.")
+        elif bn["unmatched"] > bi["unmatched"] and bn["matched"] <= bi["matched"]:
+            print("  IoU clusters better. NWD adds nothing here.")
+        else:
+            print("  Neither dominates; the difference is a trade, not a win.")
+
+    (OUTPUT_DIR / "metric_comparison.json").write_text(
+        json.dumps({"baseline": BASELINE, "nwd_c": NWD_C, "rows": rows}, indent=2),
+        encoding="utf-8",
+    )
+
+    print()
+    print(f"Written: {OUTPUT_DIR / 'metric_comparison.json'}")
+
+
+def displacement_for_iou(target, w, h):
+    """Pixel offset between two equal w x h boxes that yields `target` IoU."""
+
+    intersection = 2.0 * w * h * target / (1.0 + target)
+
+    return w - intersection / h
+
+
+PERSON_W, PERSON_H = 12, 19
 
 
 def filter_frames(frames, conf):
@@ -525,6 +684,13 @@ def main():
     parser.add_argument("--model", default="MT-005")
     parser.add_argument("--conf", type=float, default=CONF)
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument(
+        "--compare-metrics",
+        action="store_true",
+        help="Also cluster by NWD instead of IoU. Wang et al. embed NWD in "
+             "the loss, the assigner and NMS; this is the third, and the "
+             "only one that costs nothing to test.",
+    )
     parser.add_argument(
         "--sweep-conf",
         action="store_true",
@@ -710,6 +876,9 @@ def main():
     )
 
     print(f"Written: {OUTPUT_DIR / 'single_model_wbf.json'}")
+
+    if args.compare_metrics:
+        compare_metrics(frames, args)
 
     if args.sweep_conf:
         sweep_confidence(raw_frames, args)
