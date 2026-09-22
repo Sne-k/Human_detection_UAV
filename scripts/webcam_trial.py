@@ -55,9 +55,83 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-PROJECT_ROOT = Path(
-    os.environ.get("HDU_ROOT", Path(__file__).resolve().parents[1])
-)
+def _resolve_project_root():
+    """
+    Find the checkout that actually holds the weights.
+
+    Datasets, weights and training runs are gitignored, so a Git worktree has
+    the scripts but not the artefacts. Everything downstream reads HDU_ROOT,
+    so setting it here fixes the whole pipeline rather than this script alone.
+    """
+
+    explicit = os.environ.get("HDU_ROOT")
+
+    if explicit:
+        return Path(explicit)
+
+    here = Path(__file__).resolve().parents[1]
+
+    if (here / "runs" / "detect" / "results" / "training").exists():
+        return here
+
+    # A worktree lives at <main>/.claude/worktrees/<name>. Walk up looking for
+    # a checkout that has the training runs.
+    for parent in here.parents:
+        if (parent / "runs" / "detect" / "results" / "training").exists():
+            os.environ["HDU_ROOT"] = str(parent)
+            print(f"note: weights are not in this worktree; using {parent}")
+            print()
+            return parent
+
+    return here
+
+
+def _require_dependencies():
+    """
+    Fail with something actionable instead of a bare ModuleNotFoundError.
+
+    The usual cause is running the system interpreter rather than the
+    project virtual environment, which is where opencv, torch and
+    ultralytics are installed.
+    """
+
+    missing = []
+
+    for module, package in (
+        ("cv2", "opencv-python"),
+        ("numpy", "numpy"),
+        ("torch", "torch"),
+        ("ultralytics", "ultralytics"),
+    ):
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(package)
+
+    if not missing:
+        return
+
+    root = _resolve_project_root()
+    venv = root / "venv" / "Scripts" / "python.exe"
+
+    if not venv.exists():
+        venv = root / "venv" / "bin" / "python"
+
+    print("Missing: " + ", ".join(missing))
+    print()
+    print("This usually means the system Python is being used instead of the")
+    print("project virtual environment. Run it with:")
+    print()
+
+    if venv.exists():
+        print(f'  & "{venv}" scripts/webcam_trial.py --mode pipeline')
+    else:
+        print("  pip install " + " ".join(missing))
+
+    raise SystemExit(1)
+
+
+PROJECT_ROOT = _resolve_project_root()
 
 MODES = {
     "pipeline": {
@@ -109,6 +183,8 @@ def main():
     parser.add_argument("--no-show", action="store_true")
 
     args = parser.parse_args()
+
+    _require_dependencies()
 
     mode = MODES[args.mode]
 
