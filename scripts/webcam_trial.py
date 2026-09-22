@@ -212,7 +212,14 @@ def main():
     print("Geolocation is disabled - it needs MAVLink attitude and altitude,")
     print("and a laptop on a desk has neither.")
     print()
-    print("Press q in the video window to stop.")
+    print("To stop:")
+    print("  Ctrl+C in this terminal  - always works, prints the run summary")
+    print("  q in the video window    - only if that window has focus")
+
+    if args.seconds is None:
+        print()
+        print("No time limit set. A camera stream does not end on its own;")
+        print("use --seconds N if you want it to stop by itself.")
     print("=" * 74)
     print()
 

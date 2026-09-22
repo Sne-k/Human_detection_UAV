@@ -45,6 +45,7 @@ import argparse
 import json
 import os
 import statistics
+import signal
 import sys
 import time
 from collections import deque
@@ -567,6 +568,40 @@ def main():
     frame_index = 0
     started = time.perf_counter()
 
+    # A live camera never ends, and the `q` shortcut only fires when the
+    # OpenCV window has keyboard focus. Without this, an unfocused or
+    # unrendered window leaves no way out except killing the process, which
+    # discards the run summary the trial exists to produce.
+    stop = {"requested": False}
+
+    def _on_interrupt(_signum, _frame):
+        if stop["requested"]:
+            raise KeyboardInterrupt
+
+        stop["requested"] = True
+
+        print()
+        print("interrupt received - finishing this frame, then writing the "
+              "summary")
+        print("press Ctrl+C again to abort without one")
+
+    # SIGBREAK as well as SIGINT: on Windows, Ctrl+Break and a signal sent to
+    # a detached process group arrive as SIGBREAK, and Ctrl+C is ignored
+    # outright by groups created with CREATE_NEW_PROCESS_GROUP.
+    previous_handlers = []
+
+    for name in ("SIGINT", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+
+        if sig is None:
+            continue
+
+        try:
+            previous_handlers.append((sig, signal.signal(sig, _on_interrupt)))
+        except (ValueError, OSError, AttributeError):
+            # Not on the main thread, or unsupported on this platform.
+            pass
+
     for frame in frames:
         frame_start = time.perf_counter()
 
@@ -688,7 +723,16 @@ def main():
         if args.max_frames and frame_index >= args.max_frames:
             break
 
+        if stop["requested"]:
+            break
+
     elapsed = time.perf_counter() - started
+
+    for sig, handler in previous_handlers:
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass
 
     if writer is not None:
         writer.release()
