@@ -752,7 +752,8 @@ comparison was performed on all 2,611 test-set ground-truth persons to check
 whether the two models fail on the *same* people or on different people.
 
 Matching used IoU >= 0.50 at confidence 0.25
-(`scripts/compare_mt005_vs_mt007.py`).
+(`scripts/compare_mt005_vs_mt007_conf010.py`, which supersedes the
+fixed-threshold version this result was originally produced with).
 
 | Category               | Persons | Share |
 | ---------------------- | ------: | ----- |
@@ -3304,3 +3305,71 @@ calculation. Fixed to test for a positive value.
 
 That is a small bug, and it is the kind only a live sensor produces. It is a
 preview of what the real camera will surface.
+
+---
+
+## 48. Repository Audit
+
+Forty-five scripts had accumulated, and the criterion usually used for pruning
+- "is it referenced in the documentation?" - was useless here, because the
+training log cites every script as the record of how a result was produced.
+Deleting a script that produced a documented number breaks the reproducibility
+of that number.
+
+So the criterion used instead was **supersession**: a script is removable only
+if another script can reproduce its result, not merely do something similar.
+
+### Removed
+
+| Script | Superseded by |
+|--------|---------------|
+| `analyze_mt005_test_errors.py` | `evaluate_experiment.py --labels` |
+| `analyze_mt005_test_errors_conf010.py` | the same, `--conf 0.10` |
+| `analyze_mt006_test_errors.py` | the same |
+| `analyze_mt007_test_errors.py` | the same |
+| `analyze_mt005_remaining_misses.py` | `evaluate_experiment.py` mechanism breakdown |
+| `compare_mt005_vs_mt007.py` | `compare_mt005_vs_mt007_conf010.py` |
+| `compare_mt005_confidence.py` | `single_model_wbf.py --sweep-conf`, `operating_point.py` |
+
+The four `analyze_*_test_errors` files were **249 lines each, and after
+normalising the model name `analyze_mt006` differs from `analyze_mt005` by
+zero lines.** One script, pasted four times, each copy hardcoding a different
+model. `evaluate_experiment.py` takes `--labels` and `--conf` and reports a
+strict superset - it adds blind images, small-person recall and the five-way
+failure-mechanism breakdown.
+
+The other three have no argument parsing at all; every path and threshold is
+hardcoded. Each has a parameterised successor.
+
+About 1,700 lines removed, and no script imports any of them.
+
+### Kept, despite looking removable
+
+`test_tiled_inference.py` and `compare_standard_vs_tiled.py` are 639 lines
+supporting a technique that was rejected. They are the method record for a
+documented negative result - tiled inference found 87 fewer people and 485
+fewer false positives - and nothing else can reproduce it. A rejected
+experiment still needs its method kept, or the rejection becomes an assertion.
+
+### Renamed
+
+`train_mt008.py` to `train_experiment.py`. It began as the MT-008 mosaic
+ablation and ended up training MT-008 through MT-013 and MT-011b, gaining
+flags for dataset, loss weights, starting weights, architecture, NWD blending
+and seed. The name had stopped describing it.
+
+### .gitignore
+
+It listed output directories individually - `results/benchmark/`,
+`results/test_sequence/`, and so on - which meant every new script needed a
+matching entry and silently did not get one. **Ten result directories were
+neither tracked nor ignored.**
+
+Replaced with directory-wide rules: everything under `results/` is ignored
+except the README that says which script produces what, and the dataset rules
+keep `data.yaml` while ignoring the data. `.claude/` is now ignored too, since
+Git worktrees live there.
+
+Verified by construction rather than by inspection: each rule was checked with
+`git check-ignore`, and `git ls-files | git check-ignore --stdin` confirms no
+currently-tracked file became ignored.

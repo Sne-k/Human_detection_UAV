@@ -1,4 +1,18 @@
 """
+Controlled thermal experiments, expressed as a difference from MT-005.
+
+Every parameter not named on the command line is copied verbatim from the
+MT-005 run configuration, so any difference in the result is attributable to
+the flags that were passed and to nothing else. That is the whole point: it is
+why MT-008 through MT-013 are comparable to each other and to the baseline.
+
+It began as the MT-008 mosaic ablation and was generalised as later
+experiments needed different variables - dataset, loss weights, starting
+weights, architecture, NWD blending and seed. The original motivation is kept
+below because it explains the design.
+
+---
+
 MT-008 - thermal crowd-separation experiment (mosaic ablation).
 
 The failure-mechanism analysis found that the dominant remaining thermal
@@ -32,8 +46,8 @@ at once would make the result uninterpretable.
 
 Usage:
 
-    python scripts/train_mt008.py
-    python scripts/train_mt008.py --name MT-008b --mosaic 0.5
+    python scripts/train_experiment.py
+    python scripts/train_experiment.py --name MT-008b --mosaic 0.5
 """
 
 import argparse

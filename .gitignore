@@ -1,45 +1,62 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
+# ---------------------------------------------------------------------
+# Generated artefacts
+#
+# Nothing here is authored. Datasets are downloaded, weights and training
+# runs are produced by scripts/, and everything under results/ is
+# regenerated on demand. The repository tracks the code that makes them and
+# the documentation that interprets them.
+#
+# These are directory-wide rules on purpose. An earlier version listed each
+# output directory by name, which meant every new script needed a matching
+# .gitignore entry and silently did not get one - ten directories were
+# untracked and unignored before this was fixed.
+# ---------------------------------------------------------------------
 
-# Virtual environment
-venv/
-.venv/
+# Everything produced under results/, except the README that says what
+# lands where and which script produced it.
+results/*
+!results/README.md
 
-# Datasets
-raw_data/
-dataset/visdrone_person/images/
-dataset/visdrone_person/labels/
-*.zip
-
-# Training outputs
+# Ultralytics training runs.
 runs/
-results/training/
-results/dataset_check/
 
-# Model weights
+# Datasets: downloaded or converted, never authored. The per-dataset
+# data.yaml is the exception - it is configuration, it is small, and the
+# conversion scripts need it.
+raw_data/
+dataset/*
+!dataset/*/
+dataset/*/*
+!dataset/*/data.yaml
+
+# Model weights and exported graphs.
 *.pt
 *.pth
 *.onnx
 *.engine
 
-# Ultralytics
+# Archives.
+*.zip
+
+# ---------------------------------------------------------------------
+# Environment and tooling
+# ---------------------------------------------------------------------
+
+__pycache__/
+*.py[cod]
+*.pyo
+
+venv/
+.venv/
+
+# Ultralytics label caches.
 *.cache
 
-# VS Code
-.vscode/
+# Claude Code working directories, including Git worktrees.
+.claude/
 
-# OS
+.vscode/
+.idea/
+
 Thumbs.db
 .DS_Store
-# HIT-UAV dataset and generated analysis outputs
-dataset/hit_uav_person/
-results/error_analysis/
-results/hit_uav_dataset_check/
-
-# Generated benchmark and runtime outputs
-results/benchmark/
-results/test_sequence/
-results/mt007_crop_check/
-dataset/hit_uav_person_crops/
