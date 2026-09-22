@@ -186,8 +186,8 @@ python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemet
 | MT-009 | Thermal | hard-negative mining | Rejected, no measurable gain |
 | MT-010 | Thermal | box-loss weight 15.0 | Rejected, worse on every axis |
 | MT-011 | Thermal | VisDrone -> HIT-UAV transfer | **Accepted** - better calibrated |
-| MT-012 | Thermal | P2 small-object head | **Vetoed on compute**, behind a decision gate |
-| MT-013 | Thermal | NWD localisation loss | Running |
+| MT-013 | Thermal | NWD localisation loss | Rejected, did not move its target |
+| MT-012 | Thermal | P2 small-object head | Running, gate conditions met |
 
 **Nine directions tested; one improved the baseline.** MT-011 is the first,
 and it was nearly missed - see below. Model capacity was ruled out on compute,

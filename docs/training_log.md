@@ -2632,3 +2632,104 @@ from the baseline in ways that showed up at any threshold. MT-011 differs in
 The lesson is not "sweep everything". It is that a comparison protocol is
 itself a choice, and a protocol fixed before the space of possible results was
 understood will eventually hide one.
+
+---
+
+## 41. MT-013 - NWD Failed at Exactly What It Was Chosen For
+
+NWD was the best-motivated technique in the whole survey. Section 24 measured
+that 56% of unmatched predictions are near-miss boxes on real people; section
+32 showed a 4-pixel offset on a 12 x 19 px person sits exactly at IoU 0.50.
+IoU-based loss is *why* four pixels is fatal, and NWD replaces a similarity
+that collapses discontinuously with one that degrades smoothly. It costs
+nothing at inference. On paper it was the right answer.
+
+Implemented in `scripts/nwd_loss.py`, patching `BboxLoss.forward` so that
+
+    similarity = 0.5 * CIoU + 0.5 * NWD
+
+with C = 15.93 px, the measured mean object size of the HIT-UAV train split.
+Engagement was verified rather than assumed: epoch-1 box loss 1.454 against
+MT-005's 2.075, a 30% drop consistent with replacing half the similarity
+term, while class loss was unchanged at 2.473 against 2.478. Only the box term
+moved.
+
+### Result
+
+Test split. mAP@50 **0.9324** against the baseline's 0.9330 - statistically
+indistinguishable, and better than MT-011's 0.9301.
+
+Mission cost at each model's own optimum:
+
+| Model | Optimal conf | Cost | People found | Unmatched |
+|-------|-------------:|-----:|-------------:|----------:|
+| MT-011 | 0.05 | **3,385** | **2,492** | 1,005 |
+| MT-013 | 0.07 | 3,686 | 2,477 | 1,006 |
+| MT-005 | 0.10 | 3,738 | 2,470 | 918 |
+
+| Missed-person cost | MT-005 | MT-011 | MT-013 | Winner |
+|-------------------:|-------:|-------:|-------:|--------|
+| 1 | 675 | **586** | 636 | MT-011 |
+| 5 | 1,414 | **1,344** | 1,460 | MT-011 |
+| 20 | 3,738 | **3,385** | 3,686 | MT-011 |
+| 100 | 13,938 | **12,905** | 14,170 | MT-011 |
+
+MT-013 beats MT-005 only at very low cost ratios and loses to it from 5:1
+upward. It never beats MT-011. **MT-013 is rejected.**
+
+### The measurement that makes this useful
+
+A headline number would leave this as "another failure". The interesting
+question is whether NWD moved the mechanism it was chosen for.
+
+The near-miss population is directly measurable as the gap between matching at
+IoU 0.50 and at IoU 0.25 - boxes that sit on a real person but are localised
+too poorly to count under the strict criterion:
+
+| Model | IoU 0.50 | IoU 0.25 | Near-miss gap |
+|-------|---------:|---------:|--------------:|
+| MT-005 | 2,426 | 2,501 | **75** |
+| MT-011 | 2,420 | 2,484 | **64** |
+| MT-013 (NWD) | 2,405 | 2,481 | **76** |
+
+**NWD moved its own target by one box, in the wrong direction.** The technique
+selected specifically to fix near-miss localisation did not fix near-miss
+localisation. Meanwhile MT-011, which was aimed at nothing of the kind,
+reduced the gap from 75 to 64.
+
+### Why it probably failed, and what that leaves untried
+
+This is a limitation of the implementation, not necessarily of the technique,
+and the distinction matters for anyone reading this as evidence against NWD.
+
+Wang et al. ([13] in `references.md`) state that NWD can be embedded into
+**the assignment, the non-maximum suppression, and the loss function**. This
+implementation patched one of the three.
+
+The assigner is the likely problem. Ultralytics uses a task-aligned assigner
+that decides *which anchors are responsible for which ground-truth box* using
+IoU. That decision happens before the loss is ever evaluated. So on a 12 x 19
+px person, the anchors that IoU considers unqualified are still excluded from
+supervision entirely - and a smoother loss cannot teach an anchor that was
+never assigned the target. The loss was made kinder to near-misses while the
+assigner kept deciding, on IoU, which predictions were near-misses worth
+training at all.
+
+That leaves a specific, testable follow-up: **NWD in the assigner**, not only
+in the loss. It remains free at inference. It is more invasive than a loss
+patch, because the assigner also drives the classification target, so it is
+recorded here as the next thing to try rather than attempted immediately.
+
+### What the three results say together
+
+| Experiment | Target | Did it move its target? | Verdict |
+|------------|--------|-------------------------|---------|
+| MT-010 | Undersized boxes | Yes - merged 57 -> 49 | Rejected, cost landed elsewhere |
+| MT-013 | Near-miss localisation | **No** - gap 75 -> 76 | Rejected |
+| MT-011 | Nothing specific | Improved localisation anyway, 75 -> 64 | **Accepted** |
+
+Two experiments aimed at a measured mechanism, and the one that hit nothing it
+aimed at is the one that worked. That is worth sitting with rather than
+explaining away: the failure analysis correctly identified *what* goes wrong,
+and has now twice been a poor guide to *what to change*. Knowing the mechanism
+of a failure is not the same as knowing its cause.

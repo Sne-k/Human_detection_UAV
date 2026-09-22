@@ -357,7 +357,9 @@ def main():
     queue = QUEUE
 
     if args.only:
-        queue = [e for e in QUEUE if e["name"] in args.only]
+        # MT-012 is held outside QUEUE behind its gate, but naming it
+        # explicitly is a deliberate override of that gate.
+        queue = [e for e in (QUEUE + [MT012]) if e["name"] in args.only]
 
     summaries = []
 
