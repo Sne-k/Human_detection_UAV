@@ -19,11 +19,11 @@ controllability.
 
 | Area | State |
 |------|-------|
-| Detector | 10 experiments complete, MT-005 frozen as baseline |
+| Detector | 13 experiments plus a seed repeat; **MT-011b deployed** |
 | Runtime | `scripts/payload.py` - detection, tracking, movement, geolocation |
 | Export | ONNX, verified bit-exact at native input shape |
 | Benchmarks | Accuracy, latency, CPU, memory, sensor resolution |
-| Documentation | 9 documents, including payload ICD and hardware matrix |
+| Documentation | 11 documents, including payload ICD, hardware matrix and references |
 | Hardware | **Nothing procured.** All deployment figures are extrapolated |
 
 ---
@@ -35,9 +35,16 @@ used for training or model selection.
 
 | Configuration | Recall | Precision | Missed | Unmatched | Blind | Cost |
 |---------------|--------|-----------|-------:|----------:|------:|------|
-| MT-005, NMS (was baseline) | 0.9288 | 0.7917 | 186 | 638 | 8 | 1x |
-| **MT-005, WBF** | **0.9291** | **0.8320** | **185** | **490** | **8** | **1x** |
+| MT-005, NMS (original baseline) | 0.9288 | 0.7917 | 186 | 638 | 8 | 1x |
+| MT-005, WBF | 0.9291 | 0.8320 | 185 | 490 | 8 | 1x |
+| **MT-011b, WBF - deployed** | **0.9307** | **0.8449** | **181** | **446** | **6** | **1x** |
 | MT-005 + MT-006, WBF | 0.9406 | 0.7992 | 155 | 617 | 5 | 2x |
+
+**Every row is at confidence 0.25, and that understates the deployed model.**
+MT-011b's advantage is in calibration, which a fixed threshold hides by
+construction: at its own mission-optimal 0.05 it finds **2,513 people, recall
+0.9625**, against MT-005's 2,485. Reading a calibration difference off a
+single-threshold table is precisely the trap section 45 documents.
 
 **The deployed configuration fuses overlapping boxes instead of suppressing
 them, and it is free.** NMS keeps only the highest-confidence box in a
@@ -45,8 +52,11 @@ cluster, and the highest-confidence box is not necessarily the best-localised
 one; weighted box fusion averages the cluster instead. That is better on every
 axis than the old baseline - **148 fewer false positives, 23% of them, and
 +4.0 points of precision** - with the network, the exported graph and the
-Raspberry Pi 5 latency all unchanged. Verified to reproduce exactly in
-`scripts/payload.py`.
+Raspberry Pi 5 latency all unchanged.
+
+Fusion and MT-011b are independent gains and the payload runs both:
+`DEFAULT_THERMAL = "MT-011b"` with fusion at 0.60. Verified to reproduce the
+offline measurement exactly by `scripts/verify_deployed_config.py`.
 
 The two-model ensemble still finds 31 more people and remains the
 accuracy-optimal configuration, but it costs **2x inference**, which the
@@ -171,7 +181,7 @@ daylight and the contrast collapses. **The hard case is noon, not midnight.**
 Run it:
 
 ```bash
-python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemetry state.jsonl --jsonl detections.jsonl
+python scripts/payload.py --source flight.mp4 --model MT-011b --telemetry state.jsonl --jsonl detections.jsonl
 ```
 
 ---
@@ -184,16 +194,16 @@ python scripts/payload.py --source flight.mp4 --ensemble MT-005 MT-006 --telemet
 | MT-002 | RGB | 640 px baseline | mAP@50 ~0.50 |
 | MT-003 | RGB | 960 px | Improved |
 | MT-004 | RGB | 1280 px | mAP@50 0.654, RGB reference |
-| MT-005 | Thermal | 640 px baseline | **Frozen baseline** |
+| MT-005 | Thermal | 640 px baseline | Superseded reference |
 | MT-006 | Thermal | 960 px | Recall down, localisation up |
 | MT-007 | Thermal | 256 px crop augmentation | Rejected |
 | MT-008 | Thermal | mosaic = 0 | Rejected, merged boxes worse |
 | MT-009 | Thermal | hard-negative mining | Rejected, no measurable gain |
 | MT-010 | Thermal | box-loss weight 15.0 | Rejected, worse on every axis |
 | MT-011 | Thermal | VisDrone -> HIT-UAV transfer | **Accepted** - better calibrated |
-| MT-013 | Thermal | NWD localisation loss | Indistinguishable from baseline |
-| MT-011b | Thermal | MT-011 seed repeat | **Noise floor: 0.0051 mAP@50** |
+| MT-011b | Thermal | MT-011 seed repeat | **Deployed.** Noise floor: 0.0051 mAP@50 |
 | MT-012 | Thermal | P2 small-object head | Rejected on compute **and** accuracy |
+| MT-013 | Thermal | NWD localisation loss | Indistinguishable from baseline |
 
 **Eleven directions tested; one improved the baseline.** MT-011 is the only
 one, and it was nearly missed - see below.

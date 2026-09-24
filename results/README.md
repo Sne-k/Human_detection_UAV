@@ -15,16 +15,16 @@ Datasets, model weights and generated artefacts are excluded from Git via
 | MT-002 | RGB | 640 | VisDrone Person | Completed |
 | MT-003 | RGB | 960 | VisDrone Person | Completed |
 | MT-004 | RGB | 1280 | VisDrone Person | Completed - RGB reference |
-| MT-005 | Thermal | 640 | HIT-UAV Person | Completed - **frozen baseline** |
+| MT-005 | Thermal | 640 | HIT-UAV Person | Completed - superseded reference |
 | MT-006 | Thermal | 960 | HIT-UAV Person | Completed |
 | MT-007 | Thermal | 640 | HIT-UAV + 256 px crops | Completed - rejected |
 | MT-008 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
 | MT-009 | Thermal | 640 | HIT-UAV + hard negatives | Completed - rejected |
 | MT-010 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
 | MT-011 | Thermal | 640 | HIT-UAV Person | Completed - **accepted** |
+| MT-011b | Thermal | 640 | HIT-UAV Person | Completed - **deployed**; seed repeat, noise floor |
 | MT-012 | Thermal | 640 | HIT-UAV Person | Completed - rejected |
 | MT-013 | Thermal | 640 | HIT-UAV Person | Completed - indistinguishable |
-| MT-011b | Thermal | 640 | HIT-UAV Person | Completed - seed repeat, noise floor |
 
 Training runs are written by Ultralytics under
 `runs/detect/results/training/<ID>/`.
@@ -57,7 +57,13 @@ Training runs are written by Ultralytics under
 
 ## Reproducing the headline numbers
 
-Baseline accuracy:
+The deployed configuration, assembled and checked against the parts:
+
+```bash
+python scripts/verify_deployed_config.py --conf-sweep
+```
+
+Baseline accuracy for the superseded reference:
 
 ```bash
 python scripts/benchmark_models.py --models MT-005
