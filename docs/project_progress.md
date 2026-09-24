@@ -467,31 +467,86 @@ Details in [`realtime_pipeline.md`](realtime_pipeline.md).
 
 ## Current Work
 
-Single-modality accuracy tuning has reached a point of diminishing returns for
-the thermal detector. Two independent scale experiments (MT-006, MT-007) both
-failed to improve on MT-005, and the remaining failures are not explained by
-target size.
+The detector is frozen. Thirteen experiments plus a seed repeat; MT-011b is
+deployed, with weighted box fusion at 0.60. Every explanation for the residual
+near-miss failures has been closed - two by experiment, one by measurement -
+and the measured seed noise floor of 0.0051 mAP@50 means further single-run
+accuracy comparisons cannot resolve anything.
 
-Work has therefore moved to system integration. The latency benchmark,
-tracking, movement detection and the real-time pipeline are complete and
-documented. The remaining work is model export, validation on real UAV video,
-and embedded deployment.
+Work has moved to integration. The binding constraint stopped being detection
+accuracy some time ago; it is that nothing has flown, and that the interfaces
+the payload is specified against do not yet exist in software.
 
 ---
 
-## Next Planned Steps
+## Task List
 
-1. Export MT-004 and MT-005 to ONNX, verify numerical agreement with the
-   PyTorch models, and re-measure latency to quantify the gain predicted by the
-   launch-bound analysis.
-2. Validate tracking and movement detection on real UAV video, including
-   identity-stability measurement against ground truth. The current validation
-   uses a synthetic sequence and contains only one moving target, so it tests
-   false positives well and false negatives barely at all.
-3. Adopt the WBF ensemble as the thermal configuration. Its cost is resolved:
-   9.4 ms per frame under CUDA graphs, against 39 ms for one eager model.
-4. Select the companion computer using post-export measurements on candidate
-   hardware.
-5. Benchmark the exported model on the selected embedded hardware.
-6. Add the ground-station interface that consumes the JSONL detection stream.
-7. Integrate the human-detection payload with the UAV system.
+Ordered by value, not by phase. Each item says why it is worth doing and what
+it depends on, so the ordering can be argued with rather than followed.
+
+### A. Correctness gaps - do these first
+
+| # | Task | Why |
+|---|------|-----|
+| A1 | **MAVLink ingestion (IF-4)** | **Nothing in the repository speaks MAVLink.** The ICD specifies it; the payload reads telemetry from a JSONL file. Testable today against ArduPilot SITL or a replayed `.tlog`, with no hardware. |
+| A2 | **Timestamp-based frame association** | Telemetry is keyed by **frame index**. That works only because the synthetic sequence was generated with matching indices; real clocks are independent. The ICD's own figure - 1 degree of attitude error moves the fix 1.75 m at 100 m - is what a wrong association costs. Needs A1. |
+| A3 | **Optical-flow health gate** | Over water, fog or snow - all plausible SAR conditions - flow has nothing to lock onto, the ego-motion transform silently becomes garbage, and movement classification reports confident labels built on nonsense. `ego_motion_failures` is already counted; nothing acts on it. Degrade to `unknown` instead. |
+| A4 | **Search mode vs loiter mode** | Ego-motion costs 6.6 ms per frame and exists only to serve movement classification, which is also the sole reason the requirement is 6.7 FPS rather than 1.34. Section 28 already argues detect-and-report is the primary mission. Making that a runtime mode removes the cost and the requirement together, and may change the hardware decision. |
+
+### B. Validation buildable without hardware
+
+| # | Task | Why |
+|---|------|-----|
+| B1 | **Geolocation sensitivity sweep** | `geolocate.py` has hand-checkable spot cases but no systematic perturbation map. Sweep roll, pitch, yaw, altitude, GPS and timestamp error across 60/100/130 m against known truth. This is the software half of the ICD acceptance test, and it catches a coordinate-convention error before flight rather than after. |
+| B2 | **Failure injection** | Camera disappears, MAVLink stops, disk fills, inference throws, frame is corrupt, JSONL write fails. The ICD requires that payload failure not affect flight control and that storage failure not stop detection. All reproducible on a laptop. |
+| B3 | **Frame-drop robustness** | Movement classification depends on a 15-frame history with a 15 px threshold separating roughly 10 px of jitter from 49-69 px of real motion. Dropped frames change what that window spans. Untested. |
+| B4 | **Tracker stress suite** | Current validation is one synthetic sequence with a single moving target - it tests false movement flags well and little else. Missing: several simultaneous movers, targets entering and leaving frame (the `edge` state), crossing tracks, scale change with altitude. Measure ID switches, fragmentation, track lifetime. |
+| B5 | **JSONL schema validation** | The output contract is specified in the ICD and nothing checks conformance. Field presence, types, ranges, monotonic frames, finite values, `position_error_m >= 0`, no NaN. Cheap, and it becomes the integration acceptance check. |
+| B6 | **Replay harness with evaluation** | `payload.py` already replays video plus telemetry to JSONL. The missing half is scoring, so a runtime change can be measured against a fixed mission rather than eyeballed. Subsumes the separate mission-recorder idea. |
+| B7 | **`tests/` suite** | There is no test directory at all. Worth building as the container for B1-B6 rather than as a goal of its own. |
+
+### C. Informs the hardware purchase
+
+| # | Task | Why |
+|---|------|-----|
+| C1 | **Field-of-view study** | The sensor-resolution study fixed FOV at 50 degrees, but pixels-on-target depends on resolution **and** FOV **and** altitude. A narrow FOV on a cheap sensor may beat a wide FOV on an expensive one. Live procurement decision, and the geometry is exact - no simulation of appearance needed. |
+| C2 | **Buy a Raspberry Pi 5 and measure** | Every frame-rate figure here is a 3-5x extrapolation from x86. The entire compute argument rests on a factor that was estimated, not measured, and INT8 in particular may behave differently on ARM. The board costs a fraction of the camera and is independent of which camera is chosen. |
+
+### D. Demonstrator - after the above
+
+| # | Task | Why |
+|---|------|-----|
+| D1 | **Ground-station consumer** | Map, target list, confidence, movement state, coordinate and uncertainty, fed from recorded JSONL. Useful and fully offline - but it demonstrates rather than de-risks, so it follows the correctness work. |
+| D2 | **Frozen release package** | Weights, training config, seed, dataset version, test predictions, threshold sweep, mission-cost curve and exact WBF parameters as one reproducible bundle. The analysis is done; the packaging is not. |
+| D3 | **Frame logging for offline labelling** | Save frames near the confidence threshold and where tracks broke - the highest-value frames to label. Turns every future flight into training data, with no onboard learning and no runtime cost. |
+| D4 | **Simulated end-to-end mission** | The sum of A and B rather than separate work. Worth stating as the pre-hardware milestone. |
+
+---
+
+## Explicitly Not Doing
+
+**More detector experiments without a specific hypothesis.** Thirteen have been
+run. The seed noise floor is 0.0051 mAP@50, larger than most differences this
+project had been reading as signal, so another single run cannot resolve
+anything a swept comparison has not already settled.
+
+**Asynchronous pipeline redesign.** Premature. The camera will not outrun
+inference - the payload runs at roughly 7 FPS against a 6.7 FPS requirement,
+or 1.34 in report-only mode. Threading buys nothing measurable, costs a class
+of race conditions, and would destroy the deterministic replay that B6 depends
+on. Revisit only if a measurement shows acquisition blocking inference.
+
+**Synthetic sensor appearance modelling** - simulated blur, noise, contrast
+reduction, compression. The geometric half (C1) is exact and worth doing. The
+appearance half is guesswork until a real camera exists to validate it
+against, and optimising against an invented degradation model risks tuning for
+artefacts the real sensor does not produce.
+
+**Simulated daylight degradation**, for the same reason. "At what thermal
+contrast does the system stop being useful?" is the right question, and it
+cannot be answered honestly by inventing the contrast reduction.
+
+**Online or in-flight learning.** No label source exists in flight, the board
+has no compute headroom, and a payload whose behaviour changes mid-mission
+cannot be verified. Collect now, fine-tune offline later - which is the MT-011
+recipe that already worked.
