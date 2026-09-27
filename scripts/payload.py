@@ -122,16 +122,40 @@ COLOR_TEXT = (255, 255, 255)
 # Detection
 # ---------------------------------------------------------------------
 
+def letterbox_geometry(height, width, shape):
+    """
+    The exact resize and padding that letterbox() applies, as one source.
+
+    The inverse transform in Detector must use the same rounded dimensions and
+    integer padding as the forward one. They used to be computed separately:
+    the forward pass padded from rounded sizes, the inverse un-padded from
+    unrounded ones. On the three frame sizes this project has used - 640 x 512
+    thermal, 640 x 480 webcam, 512 x 384 test sequence - the two agree
+    exactly, but on a sensor whose size does not scale to an integer they
+    disagree by up to about a pixel, and one pixel is a quarter of the 4 px
+    offset that drops a 12 x 19 px person below IoU 0.50.
+    """
+
+    target_h, target_w = shape
+
+    ratio = min(target_h / height, target_w / width)
+
+    new_w = int(round(width * ratio))
+    new_h = int(round(height * ratio))
+
+    left = (target_w - new_w) // 2
+    top = (target_h - new_h) // 2
+
+    return new_w, new_h, left, top
+
+
 def letterbox(image, shape):
     """Resize into `shape` (h, w) preserving aspect, padding with 114."""
 
     target_h, target_w = shape
     height, width = image.shape[:2]
 
-    ratio = min(target_h / height, target_w / width)
-
-    new_w = int(round(width * ratio))
-    new_h = int(round(height * ratio))
+    new_w, new_h, left, top = letterbox_geometry(height, width, shape)
 
     resized = (
         cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
@@ -140,10 +164,6 @@ def letterbox(image, shape):
     )
 
     canvas = np.full((target_h, target_w, 3), 114, dtype=np.uint8)
-
-    top = (target_h - new_h) // 2
-    left = (target_w - new_w) // 2
-
     canvas[top:top + new_h, left:left + new_w] = resized
 
     return canvas
@@ -164,6 +184,14 @@ class Detector:
 
         self.conf = conf
         self.fuse_iou = fuse_iou
+
+        # A command line delivers a GPU index as the string "0", which
+        # PyTorch rejects. main() used to convert it, so every other caller
+        # had to remember to; normalising here makes the Detector safe to
+        # construct from anywhere.
+        if isinstance(device, str) and device.isdigit():
+            device = int(device)
+
         self.device = device
         self.classes = classes
         self.names = list(names)
@@ -199,7 +227,22 @@ class Detector:
         self.single_fuse_iou = single_fuse_iou
 
     def __call__(self, frame):
-        """Returns (boxes Nx4 xyxy, scores N, sources list)."""
+        """
+        Returns (boxes Nx4 xyxy, scores N, votes list).
+
+        Boxes are in original-frame pixels. `votes` is the number of distinct
+        models behind each fused box - always 1 for a single model.
+        """
+
+        return self.fuse(*self.raw(frame))
+
+    def raw(self, frame):
+        """
+        Every box above the confidence threshold, before fusion.
+
+        Returned as (boxes, scores, sources) in original-frame pixels. Split
+        from __call__ so a fusion rule can be evaluated on identical input.
+        """
 
         height, width = frame.shape[:2]
 
@@ -227,15 +270,14 @@ class Detector:
 
             xyxy = boxes.xyxy.cpu().numpy()
 
-            # Undo the letterbox back into original frame coordinates.
-            target_h, target_w = entry["shape"]
-            ratio = min(target_h / height, target_w / width)
+            # Undo the letterbox with the geometry that produced it, so the
+            # forward and inverse transforms cannot disagree.
+            new_w, new_h, left, top = letterbox_geometry(
+                height, width, entry["shape"]
+            )
 
-            pad_x = (target_w - width * ratio) / 2
-            pad_y = (target_h - height * ratio) / 2
-
-            xyxy[:, [0, 2]] = (xyxy[:, [0, 2]] - pad_x) / ratio
-            xyxy[:, [1, 3]] = (xyxy[:, [1, 3]] - pad_y) / ratio
+            xyxy[:, [0, 2]] = (xyxy[:, [0, 2]] - left) * (width / new_w)
+            xyxy[:, [1, 3]] = (xyxy[:, [1, 3]] - top) * (height / new_h)
 
             xyxy[:, [0, 2]] = xyxy[:, [0, 2]].clip(0, width)
             xyxy[:, [1, 3]] = xyxy[:, [1, 3]].clip(0, height)
@@ -247,15 +289,26 @@ class Detector:
         if not pooled_boxes:
             return np.zeros((0, 4)), np.zeros(0), []
 
-        boxes = np.concatenate(pooled_boxes)
-        scores = np.concatenate(pooled_scores)
+        return (
+            np.concatenate(pooled_boxes),
+            np.concatenate(pooled_scores),
+            sources,
+        )
+
+    def fuse(self, boxes, scores, sources):
+        """Cluster and fuse, with the rule each configuration was measured with."""
+
+        if not len(boxes):
+            return np.zeros((0, 4)), np.zeros(0), []
 
         if not self.ensemble:
             return weighted_box_fusion(
-                boxes, scores, sources, self.single_fuse_iou
+                boxes, scores, sources, self.single_fuse_iou, score="seed"
             )
 
-        return weighted_box_fusion(boxes, scores, sources, self.fuse_iou)
+        return weighted_box_fusion(
+            boxes, scores, sources, self.fuse_iou, score="mean"
+        )
 
 
 def iou_1_to_n(box, others):
@@ -277,16 +330,35 @@ def iou_1_to_n(box, others):
     return np.where(union > 0, inter / union, 0.0)
 
 
-def weighted_box_fusion(boxes, scores, sources, fuse_iou):
+def weighted_box_fusion(boxes, scores, sources, fuse_iou, score="seed"):
     """
     Average overlapping boxes weighted by confidence.
 
-    This is the step that makes the ensemble worth its cost. Most shared
-    failures are near-miss boxes between IoU 0.25 and 0.50; averaging two
-    independent near-misses moves the result across the matching threshold,
-    which simultaneously converts a miss into a match and removes what would
-    have counted as a false positive.
+    Most failures are near-miss boxes between IoU 0.25 and 0.50; averaging
+    near-misses moves the result across the matching threshold, which converts
+    a miss into a match and removes what would have counted as a false
+    positive at the same time.
+
+    `score` sets the fused box's confidence, and the two configurations were
+    measured with different rules:
+
+      seed  the highest-confidence member's score. Single-model fusion
+            (single_model_wbf.py, training_log.md section 36) was measured
+            this way on purpose: the mean lowers every multi-box cluster's
+            score, and multi-box clusters are exactly the near-miss cases
+            fusion exists to rescue.
+      mean  the mean over members. The ensemble (ensemble_thermal.py) was
+            measured this way, so a box one model found is not scored like
+            one every model agreed on.
+
+    The runtime used to take the mean for both. That moved the single-model
+    operating point away from the one that was measured, and because the fused
+    score feeds ByteTrack's match cost and its new-track threshold, it lowered
+    the chance of the rescued boxes ever becoming output.
     """
+
+    if score not in ("seed", "mean"):
+        raise ValueError(f"score must be 'seed' or 'mean', not {score!r}")
 
     order = np.argsort(-scores)
 
@@ -325,7 +397,11 @@ def weighted_box_fusion(boxes, scores, sources, fuse_iou):
             (boxes[members] * weights[:, None]).sum(axis=0) / total
         )
 
-        fused_scores.append(float(weights.mean()))
+        # Scores are sorted descending and every earlier index is already
+        # used, so the seed at `index` is the cluster's highest score.
+        fused_scores.append(
+            float(scores[index]) if score == "seed" else float(weights.mean())
+        )
         fused_votes.append(len(set(sources[members])))
 
     if not fused_boxes:
@@ -380,15 +456,140 @@ class Detections:
         return Detections(self.xyxy[mask], self.conf[mask])
 
 
-def build_tracker(frame_rate):
+def transform_boxes(boxes, matrix):
+    """
+    Map xyxy boxes through a 3x3 similarity transform, keeping them upright.
+
+    The centre is transformed exactly and the size scaled by the transform's
+    uniform scale. That is exact for translation and scale. Under rotation the
+    box keeps its image-aligned shape rather than rotating, which leaves its
+    shape consistent between consecutive frames - and consecutive frames are
+    all that association ever compares.
+    """
+
+    if not len(boxes):
+        return np.zeros((0, 4))
+
+    boxes = np.asarray(boxes, dtype=np.float64)
+
+    cx = (boxes[:, 0] + boxes[:, 2]) / 2.0
+    cy = (boxes[:, 1] + boxes[:, 3]) / 2.0
+    w = boxes[:, 2] - boxes[:, 0]
+    h = boxes[:, 3] - boxes[:, 1]
+
+    moved = matrix @ np.stack([cx, cy, np.ones_like(cx)])
+    ncx, ncy = moved[0] / moved[2], moved[1] / moved[2]
+
+    scale = float(np.sqrt(abs(np.linalg.det(matrix[:2, :2]))))
+
+    nw, nh = w * scale, h * scale
+
+    return np.stack(
+        [ncx - nw / 2.0, ncy - nh / 2.0, ncx + nw / 2.0, ncy + nh / 2.0],
+        axis=1,
+    )
+
+
+def track_frame(tracker, boxes, scores, frame, cumulative=None):
+    """
+    One frame through the tracker, stabilised by ego-motion when available.
+
+    ByteTrack links detections across frames by box overlap. From a moving
+    aircraft that overlap does not survive: at 100 m and 20 m/s the ground
+    moves about 20 px between processed frames, and a 12 x 19 px person moved
+    20 px has none left. On sequences built from the test split, raw-pixel
+    tracking emitted every detection at 0 px of inter-frame motion, 55% at
+    4 px and 8% at 5 px; across all 579 sequences at 20 px/frame it matched
+    5% of people per frame, against 93% for the detector alone - and every
+    record the payload emits comes from a track. Stabilised, it matches 90%.
+    `evaluate_tracking_gate.py` reproduces this; training_log.md section 49.
+
+    The payload already estimates camera motion every frame, but only used it
+    after tracking, for movement classification. Here detections are mapped
+    into the stabilised world frame first, where a stationary person does not
+    move, so association sees the 0 px case whatever the aircraft is doing.
+    Tracker output is mapped back into current-frame pixels for the record,
+    the border check and geolocation.
+
+    `cumulative` maps the first frame into the current one, as returned by
+    EgoMotionEstimator.update. Without it the tracker runs on raw pixels -
+    which works for a static or slowly panning camera and fails in flight.
+
+    Returns (rows, world_boxes): tracker rows with boxes in current-frame
+    pixels, and the same boxes in the stabilised frame for movement
+    classification.
+    """
+
+    if cumulative is None:
+        rows = tracker.update(Detections(boxes, scores), frame)
+
+        if not len(rows):
+            return rows, np.zeros((0, 4))
+
+        return rows, rows[:, :4].copy()
+
+    try:
+        to_world = np.linalg.inv(cumulative)
+    except np.linalg.LinAlgError:
+        # Degenerate flow can leave a singular transform. Fall back to raw
+        # pixels for this frame, as EgoMotionEstimator.to_world does.
+        return track_frame(tracker, boxes, scores, frame, None)
+
+    rows = tracker.update(
+        Detections(transform_boxes(boxes, to_world), scores), frame
+    )
+
+    if not len(rows):
+        return rows, np.zeros((0, 4))
+
+    world = rows[:, :4].astype(np.float64).copy()
+
+    rows = rows.copy()
+    rows[:, :4] = transform_boxes(world, cumulative)
+
+    return rows, world
+
+
+# ByteTrack's low-score band. Boxes between this and the operating point can
+# continue an existing track but never start one.
+TRACK_LOW_THRESH = 0.1
+
+
+def build_tracker(frame_rate, conf=CONF):
+    """
+    ByteTrack, with its thresholds derived from the operating point.
+
+    Every record the payload emits comes from a track, so the tracker is a
+    gate on the whole output. A new track can only start from a detection at
+    or above track_high_thresh that also clears new_track_thresh. Both were
+    fixed at 0.25, so at a more sensitive operating point - such as the 0.05
+    that mission cost selects in training_log.md section 37 - a person whose
+    score never reached 0.25 could never be reported. The tracker silently
+    re-imposed the threshold the operating point had just lowered.
+
+    Both now follow `conf`. At the default of 0.25 the values are exactly the
+    previous ones, so the default threshold behaviour is unchanged; a
+    non-default operating point now means what it says.
+
+    The guard against spurious tracks is ByteTrack's own: after the first
+    frame, a new track is not reported until it is matched again on a later
+    frame, so a single-frame false positive cannot become output. What the
+    lower threshold costs in spurious tracks is measured by
+    scripts/evaluate_tracking_gate.py rather than assumed.
+
+    `frame_rate` is unused. This BYTETracker takes no frame-rate argument, so
+    track_buffer is a number of frames, not a duration: about 4 s at the
+    target's 7 FPS, 1 s at a 30 FPS webcam.
+    """
+
     from types import SimpleNamespace
     from ultralytics.trackers.byte_tracker import BYTETracker
 
     args = SimpleNamespace(
         tracker_type="bytetrack",
-        track_high_thresh=0.25,
-        track_low_thresh=0.1,
-        new_track_thresh=0.25,
+        track_high_thresh=conf,
+        track_low_thresh=min(TRACK_LOW_THRESH, conf),
+        new_track_thresh=conf,
         track_buffer=30,
         match_thresh=0.8,
         fuse_score=True,
@@ -409,12 +610,17 @@ def main():
     parser.add_argument("--source", required=True)
 
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--model", default=None, help="Single model, e.g. MT-005")
+    group.add_argument(
+        "--model",
+        default=None,
+        help=f"Single model. Defaults to {DEFAULT_THERMAL}, the deployed detector.",
+    )
     group.add_argument(
         "--ensemble",
         nargs="+",
         default=None,
-        help="Two or more models to fuse, e.g. MT-005 MT-006",
+        help="Two or more models to fuse, e.g. MT-011b MT-006. Costs one "
+             "inference per model; not deployable on the target board.",
     )
     group.add_argument(
         "--weights",
@@ -487,7 +693,10 @@ def main():
         print("NOTE: running arbitrary weights. This exercises the pipeline;")
         print("      it is not a validation of the project's detectors.")
     else:
-        names = args.ensemble or [args.model or "MT-005"]
+        # DEFAULT_THERMAL is the deployed model. The fallback used to be a
+        # hardcoded "MT-005", so the constant existed but did not decide
+        # what ran unless --model was passed.
+        names = args.ensemble or [args.model or DEFAULT_THERMAL]
 
     device = args.device
 
@@ -509,7 +718,17 @@ def main():
     print(f"stream:  {width}x{height} @ {fps:.1f} fps, "
           f"{total or 'unknown'} frames")
 
-    tracker = build_tracker(fps)
+    tracker = build_tracker(fps, args.conf)
+
+    if args.no_ego_motion:
+        # Ego-motion used to serve movement classification alone. It now also
+        # stabilises tracking, and every record the payload emits comes from a
+        # track - so without it, output collapses once the camera moves more
+        # than a few pixels per frame.
+        print("WARNING: --no-ego-motion also disables stabilised tracking.")
+        print("         Raw-pixel tracking does not associate at flight speed")
+        print("         (about 20 px/frame); expect almost no output from a")
+        print("         moving aircraft. Fine for a static camera or webcam.")
 
     ego = None if args.no_ego_motion else EgoMotionEstimator()
 
@@ -605,8 +824,11 @@ def main():
     for frame in frames:
         frame_start = time.perf_counter()
 
-        if ego is not None:
+        cumulative = (
             ego.update(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+            if ego is not None
+            else None
+        )
 
         detect_start = time.perf_counter()
 
@@ -614,18 +836,22 @@ def main():
 
         detect_times.append(time.perf_counter() - detect_start)
 
-        tracks = tracker.update(Detections(boxes, scores), frame)
+        # Tracks are formed in the stabilised frame; see track_frame().
+        tracks, world_boxes = track_frame(
+            tracker, boxes, scores, frame, cumulative
+        )
 
         records = []
 
-        for row in tracks:
+        for row, world_box in zip(tracks, world_boxes):
             x1, y1, x2, y2 = row[:4]
             track_id = int(row[4])
             score = float(row[5])
 
-            centre = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-
-            world = ego.to_world(centre) if ego is not None else centre
+            world = (
+                (world_box[0] + world_box[2]) / 2.0,
+                (world_box[1] + world_box[3]) / 2.0,
+            )
 
             at_border = (
                 x1 <= args.border_margin

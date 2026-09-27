@@ -20,7 +20,7 @@ controllability.
 | Area | State |
 |------|-------|
 | Detector | 13 experiments plus a seed repeat; **MT-011b deployed** |
-| Runtime | `scripts/payload.py` - detection, tracking, movement, geolocation |
+| Runtime | `scripts/payload.py` - detection, fusion, stabilised tracking, movement, geolocation |
 | Export | ONNX, verified bit-exact at native input shape |
 | Benchmarks | Accuracy, latency, CPU, memory, sensor resolution |
 | Documentation | 11 documents, including payload ICD, hardware matrix and references |
@@ -40,11 +40,27 @@ used for training or model selection.
 | **MT-011b, WBF - deployed** | **0.9307** | **0.8449** | **181** | **446** | **6** | **1x** |
 | MT-005 + MT-006, WBF | 0.9406 | 0.7992 | 155 | 617 | 5 | 2x |
 
-**Every row is at confidence 0.25, and that understates the deployed model.**
+**Every row is at confidence 0.25, on still images - the detection stage,
+before tracking.** Both qualifiers matter.
+
 MT-011b's advantage is in calibration, which a fixed threshold hides by
-construction: at its own mission-optimal 0.05 it finds **2,513 people, recall
-0.9625**, against MT-005's 2,485. Reading a calibration difference off a
-single-threshold table is precisely the trap section 45 documents.
+construction: at its own mission-optimal 0.05 the detector finds **2,513
+people on still images, recall 0.9625**, against MT-005's 2,485. Reading a
+calibration difference off a single-threshold table is the trap section 45
+documents.
+
+But the payload's output is tracks, not detections, and until section 49 the
+tracker could not associate targets at flight speed. What the payload actually
+emits, on drifting sequences at the ~20 px/frame of flight, conf 0.05:
+
+| | Frame recall | People reported |
+|---|---:|---:|
+| Detection stage (ceiling) | 0.958 | 2,569 / 2,611 |
+| Payload before section 49 | **0.047** | 1,786 / 2,611 - and that flatters it |
+| **Payload now** | **0.912** | **2,509 / 2,611** |
+
+The detection-stage figures above are real, but they describe what the
+detector sees. The last row is what reaches the rescue team.
 
 **The deployed configuration fuses overlapping boxes instead of suppressing
 them, and it is free.** NMS keeps only the highest-confidence box in a
@@ -157,26 +173,36 @@ daylight and the contrast collapses. **The hard case is noon, not midnight.**
         +---------------------+---------------------+
         |                                           |
         v                                           v
-  Ego-motion estimate                     Detector (1 or N models)
+  Ego-motion estimate                     Detector - MT-011b
   LK flow + affine                        weighted box fusion
         |                                           |
-        |                                           v
-        |                                     ByteTrack
+        +-------------> Stabilise <-----------------+
+                  detections into the world frame
+                              |
+                              v
+                          ByteTrack
+             in the world frame, where a stationary
+              person does not move between frames
+                              |
+        +---------------------+---------------------+
         |                                           |
-        +--------------> World-frame <--------------+
-                         stabilisation
-                              |
-                              v
-                     Movement classification
-                     moving / stationary / edge / unknown
-                              |
-                              v
-                        Geolocation
-                     lat, lon, error estimate
+        v                                           v
+  Movement classification                 Mapped back to image pixels
+  moving / stationary / edge / unknown    Geolocation: lat, lon, error
+        |                                           |
+        +---------------------+---------------------+
                               |
                               v
               JSONL detection stream --> Ground station
 ```
+
+**Stabilisation comes before tracking, not after.** ByteTrack links boxes by
+overlap, and from a moving aircraft there is none: at 100 m and 20 m/s the
+ground moves about 20 px between frames, and a 12 x 19 px person moved 20 px
+has no overlap with where it was. Tracking in raw pixels - which this payload
+did until the fix in [`docs/training_log.md`](docs/training_log.md)
+section 49 - emits almost nothing in flight. Every record comes from a track,
+so this is the difference between a working payload and a silent one.
 
 Run it:
 
@@ -283,7 +309,8 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `single_model_wbf.py` | Fusion vs suppression on one model, the free precision gain |
 | `geolocate.py` | Pixel detections to ground coordinates |
 | `webcam_trial.py` | Live-camera trial, explicit about what it can and cannot validate |
-| `verify_deployed_config.py` | Runs the assembled payload and checks it reproduces the parts |
+| `verify_deployed_config.py` | Runs the payload's detection stage and checks it reproduces the parts - stops before tracking |
+| `evaluate_tracking_gate.py` | Scores what the payload actually emits, through tracking, on drifting sequences with exact truth |
 
 ### Dataset preparation
 
@@ -381,8 +408,11 @@ ego-motion add 22% on top of inference, measured end to end. See
 ## Limitations
 
 - **No hardware.** Every deployment figure is extrapolated from x86.
-- **No real flight video.** Tracking and movement are validated on a
-  synthetic sequence with one moving target.
+- **No real flight video.** Tracking is validated on 579 drifting sequences
+  built from the test split, translation only; movement on one synthetic
+  sequence with a single mover. Rotation, altitude change, motion blur and
+  featureless terrain are untested, and tracking now depends on ego-motion,
+  which is exactly what those would stress.
   A live-camera trial exists (`scripts/webcam_trial.py`) but the webcam is
   visible light while the detector is thermal, so it validates the pipeline,
   not detection.

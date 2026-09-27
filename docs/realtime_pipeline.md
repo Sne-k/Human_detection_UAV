@@ -22,17 +22,17 @@ The training experiments are documented separately in
                      |
                      v
           +----------------------+
-          |   YOLO26n detector   |   MT-004 (RGB) or MT-005 (thermal)
+          |   YOLO26n detector   |   MT-011b (thermal), weighted box fusion
           +----------------------+
                      |
                      v
           +----------------------+
-          |   ByteTrack tracker  |   persistent identity per person
+          |  Stabilise boxes     |   detections -> world frame, BEFORE tracking
           +----------------------+
                      |
                      v
           +----------------------+
-          |  World-frame mapping |   track centre -> stabilised coordinates
+          |   ByteTrack tracker  |   identity, formed in the world frame
           +----------------------+
                      |
                      v
@@ -404,6 +404,43 @@ tracking and geolocation at this resolution.
 
 ---
 
+## 4c. What the Confidence Number Means
+
+Each box is labelled with the detector score, as a percentage:
+
+```text
+#1 edge 89%
+```
+
+and the banner carries the operating point the run is using, `conf>=0.35`.
+
+**It is not a probability that the box contains a person.** A network trained
+with cross-entropy is free to be confidently wrong, and nothing in this
+project calibrates the score against observed frequency. A box at 89% is not
+right 89% of the time.
+
+What the score is reliably good for is **ranking**: an 0.89 box is more
+trustworthy than an 0.30 one. And because this project swept the threshold
+rather than inheriting it, there is a measured answer for what each operating
+point actually delivers on the held-out test split (MT-011b, fusion at 0.60):
+
+| Threshold | People found | Precision |
+|----------:|-------------:|----------:|
+| 0.25 | 2,430 | **0.845** |
+| 0.15 | 2,471 | 0.782 |
+| 0.10 | 2,489 | 0.741 |
+| 0.05 | 2,513 | **0.672** |
+
+So at the conventional threshold roughly one reported box in six is not a
+person; at the most sensitive setting it is one in three. That is the number
+to quote when someone asks how sure the system is - **not the percentage on
+the box**, which answers a different and much vaguer question.
+
+See `training_log.md` section 37 for how the operating point was derived from
+mission cost rather than convention.
+
+---
+
 ## 5. Model Export
 
 Implemented in [`scripts/export_models.py`](../scripts/export_models.py).
@@ -483,48 +520,7 @@ constraint to honour at integration time, not a blocker.
 
 ## 6. Next Steps
 
-1. Measure exported-model latency with a GPU execution provider or TensorRT.
-   The launch-bound analysis is now confirmed by CUDA graphs (16x on MT-005,
-   bit-identical), so the remaining question is how much of that an exported
-   runtime recovers, not whether the overhead is real.
-2. Validate tracking and movement detection on real UAV video, including
-   identity-stability measurement against ground truth.
-3. Re-run both benchmarks on candidate companion computers.
-4. Add the ground-station interface that consumes the JSONL stream.
-
----
-
-## 4c. What the Confidence Number Means
-
-Each box is labelled with the detector score, as a percentage:
-
-```text
-#1 edge 89%
-```
-
-and the banner carries the operating point the run is using, `conf>=0.35`.
-
-**It is not a probability that the box contains a person.** A network trained
-with cross-entropy is free to be confidently wrong, and nothing in this
-project calibrates the score against observed frequency. A box at 89% is not
-right 89% of the time.
-
-What the score is reliably good for is **ranking**: an 0.89 box is more
-trustworthy than an 0.30 one. And because this project swept the threshold
-rather than inheriting it, there is a measured answer for what each operating
-point actually delivers on the held-out test split (MT-011b, fusion at 0.60):
-
-| Threshold | People found | Precision |
-|----------:|-------------:|----------:|
-| 0.25 | 2,430 | **0.845** |
-| 0.15 | 2,471 | 0.782 |
-| 0.10 | 2,489 | 0.741 |
-| 0.05 | 2,513 | **0.672** |
-
-So at the conventional threshold roughly one reported box in six is not a
-person; at the most sensitive setting it is one in three. That is the number
-to quote when someone asks how sure the system is - **not the percentage on
-the box**, which answers a different and much vaguer question.
-
-See `training_log.md` section 37 for how the operating point was derived from
-mission cost rather than convention.
+The task list lives in one place, [`project_progress.md`](project_progress.md),
+ordered by value with each item's dependencies stated. It is not duplicated
+here: an earlier copy in this section kept planning GPU and TensorRT work for
+a target that turned out to be a CPU-only Raspberry Pi 5.

@@ -46,6 +46,8 @@ Training runs are written by Ultralytics under
 | `results/operating_point/` | `operating_point.py` |
 | `results/quantization/` | `quantize_int8.py` |
 | `results/single_model_wbf/` | `single_model_wbf.py` |
+| `results/deployed_config/` | `verify_deployed_config.py` |
+| `results/tracking_gate/` | `evaluate_tracking_gate.py` |
 | `results/experiment_queue/` | `run_experiment_queue.py` |
 | `results/hard_negatives/` | `mine_hard_negatives.py` |
 | `results/test_sequence/` | `make_test_sequence.py`, `payload.py` |
