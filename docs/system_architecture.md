@@ -32,29 +32,24 @@ Solid boxes are implemented and validated. Dashed boxes are planned.
               v                             v
    +----------------------+      +----------------------+
    |  Ego-motion estimate |      |    YOLO26n detector  |
-   |  LK optical flow +   |      |  MT-004 RGB 1280 px  |
-   |  partial affine fit  |      |  MT-005 IR   640 px  |
+   |  LK optical flow +   |      |  MT-011b IR  640 px  |
+   |  partial affine fit  |      |  weighted box fusion |
    +----------------------+      +----------------------+
-              |                             |
-              |                             v
-              |                  +----------------------+
-              |                  |  Confidence filter   |
-              |                  |   operational 0.25   |
-              |                  +----------------------+
-              |                             |
-              |                             v
-              |                  +----------------------+
-              |                  |   ByteTrack tracker  |
-              |                  |  persistent track ID |
-              |                  +----------------------+
               |                             |
               +--------------+--------------+
                              |
                              v
                   +----------------------+
-                  | World-frame mapping  |
-                  | stabilised track     |
-                  | coordinates          |
+                  | Stabilise detections |
+                  | into the world frame |
+                  | BEFORE tracking      |
+                  +----------------------+
+                             |
+                             v
+                  +----------------------+
+                  |   ByteTrack tracker  |
+                  |  thresholds follow   |
+                  |  the operating point |
                   +----------------------+
                              |
                              v
@@ -79,12 +74,13 @@ Solid boxes are implemented and validated. Dashed boxes are planned.
                              +- - - - - - - - - - - - - -+
 
 
-   Planned deployment path
-   -----------------------
-   +- - - - - - - - -+   +- - - - - - - - -+   +- - - - - - - - -+
-   |  ONNX/TensorRT  |-->|  Companion      |-->|  UAV payload    |
-   |  export         |   |  computer       |   |  integration    |
-   +- - - - - - - - -+   +- - - - - - - - -+   +- - - - - - - - -+
+   Deployment path
+   ---------------
+   +-----------------+   +- - - - - - - - -+   +- - - - - - - - -+
+   |  ONNX export    |-->|  ONNX Runtime   |-->|  UAV payload    |
+   |  done, verified |   |  CPU, Pi 5      |   |  integration    |
+   +-----------------+   +- - - - - - - - -+   +- - - - - - - - -+
+     solid = done         dashed = not yet procured or integrated
 ```
 
 ---
@@ -93,19 +89,20 @@ Solid boxes are implemented and validated. Dashed boxes are planned.
 
 | Component            | Status      | Implementation                                     |
 | -------------------- | ----------- | -------------------------------------------------- |
-| Unified runtime      | Implemented | `scripts/payload.py` - ensemble, tracking, movement, geolocation |
+| Unified runtime      | Implemented | `scripts/payload.py` - detection, fusion, stabilised tracking, movement, geolocation |
 | Frame acquisition    | Implemented | `scripts/payload.py`                               |
 | RGB detector         | Implemented | MT-004, YOLO26n @ 1280 px, VisDrone Person         |
-| Thermal detector     | Implemented | MT-005, YOLO26n @ 640 px, HIT-UAV Person           |
-| Confidence filtering | Implemented | Operational threshold 0.25                         |
-| Tracking             | Implemented | ByteTrack driven directly, so it accepts fused boxes |
+| Thermal detector     | Implemented | MT-011b, YOLO26n @ 640 px, VisDrone -> HIT-UAV     |
+| Box fusion           | Implemented | Weighted box fusion at 0.60, seed score            |
+| Confidence filtering | Implemented | Default 0.25; mission-optimal 0.05-0.10            |
+| Tracking             | Implemented | ByteTrack in the stabilised frame, thresholds from `--conf` |
 | Ego-motion estimate  | Implemented | LK optical flow + partial affine, RANSAC           |
 | Movement classifier  | Implemented | World-frame displacement over a sliding window     |
 | Detection output     | Implemented | Annotated video + JSONL stream                     |
 | Geo-referencing      | Implemented | Pixel detection -> ground lat/lon + error estimate  |
 | Latency benchmark    | Implemented | `scripts/benchmark_latency.py`                     |
-| Model export         | Planned     | ONNX, then TensorRT on the target                  |
-| Companion computer   | Planned     | Selection pending post-export benchmarks           |
+| Model export         | Implemented | ONNX, verified exact at the native 512 x 640 shape |
+| Companion computer   | Selected    | Raspberry Pi 5 class; not yet procured or measured |
 | Payload integration  | Planned     | Ground-station link consuming the JSONL stream     |
 
 ---

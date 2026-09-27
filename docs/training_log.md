@@ -3230,6 +3230,14 @@ hanging.
 
 ### An observation about tracking that needs real video
 
+> **Correction (section 49).** The reading below is wrong on its premise. The
+> sequence contains **32 people** - 31 stationary, from the source image, plus
+> one composited mover - not one. Fifteen tracks for 32 people is
+> under-tracking, not fragmentation, and its cause is the tracking collapse
+> found in section 49: this sequence pans, and the tracker was linking boxes
+> in raw pixels. The paragraph is left as written so the mistake stays
+> visible.
+
 The same 120-frame sequence - which contains **one** moving target - through
 both detectors at conf 0.10:
 
@@ -3373,3 +3381,230 @@ Git worktrees live there.
 Verified by construction rather than by inspection: each rule was checked with
 `git check-ignore`, and `git ls-files | git check-ignore --stdin` confirms no
 currently-tracked file became ignored.
+
+---
+
+## 49. The Tracker Could Not Track in Flight
+
+An external review of the runtime flagged three divergences between what had
+been measured and what ships:
+
+1. The tracker's thresholds were fixed at 0.25 / 0.1 / 0.25 and ignored
+   `--conf`. Every record the payload emits comes from a track, so at the
+   mission-optimal 0.05 a person whose score never reached 0.25 could never
+   be reported.
+2. The runtime's fusion averaged each cluster's scores, where the measurement
+   in section 36 deliberately kept the seed's - with a comment in the
+   measurement script warning that averaging would move the operating point.
+3. The letterbox inverse used unrounded geometry where the forward pass used
+   rounded, so the two could disagree on odd-sized sensors.
+
+It also noted that `verify_deployed_config.py` - described in its own
+docstring as running "the real thing" and "the payload" - never constructs a
+tracker. It validated the detection stage, and that detection-stage figure had
+become the README's headline.
+
+All four were confirmed in the code. Measuring the first one is what exposed a
+much larger problem.
+
+### Why the tracker had never been measured
+
+Every accuracy figure in this project comes from the HIT-UAV test split: 579
+independent still images. Tracking across unrelated scenes is meaningless, so
+nothing that measures accuracy had ever run the tracker - which is also why
+`verify_deployed_config.py` stops where it does.
+
+`evaluate_tracking_gate.py` builds sequences with exact per-frame truth from
+those same images. Each image drifts across a fixed canvas by a set number of
+whole pixels per frame, so people stay at native scale and truth is the labels
+moved by the known offset. The payload's own Detector, ego-motion estimator
+and tracker then run over them, and what the payload would emit is scored.
+
+### The collapse
+
+Twelve sequences, tracker fed the detector's output, raw pixels, emitted
+records as a fraction of detections:
+
+| Inter-frame motion | 0 px | 1 px | 2 px | 3 px | 4 px | **5 px** | 8 px | 12 px | **20 px** |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Emitted / detected | 1.00 | 0.93 | 0.87 | 0.70 | 0.55 | **0.08** | 0.01 | 0.03 | **0.02** |
+
+ByteTrack links a detection to a track by box overlap. A 12 x 19 px person
+moved 5 px keeps an IoU of about a third with where it was, and the score-fused
+match cost then falls outside ByteTrack's threshold. A new track is not
+reported until it is matched again on a later frame, so a target that never
+overlaps itself is never reported at all.
+
+**Flight is about 20 px per frame.** From `coverage_requirements.py`: at 100 m
+the ground sampling distance is 0.146 m/px, so 20 m/s cruise moves the ground
+137 px/s - 20 px between frames at the target's 7 FPS, and about 34 px at
+60 m.
+
+So the payload as merged would have emitted a few percent of what it detected,
+from the moment the aircraft moved.
+
+### Why nothing caught it
+
+- **The synthetic test sequence pans slowly.** It was built to test movement
+  classification, and it does; its inter-frame motion is small enough that
+  raw-pixel tracking mostly survives.
+- **Webcam targets are enormous.** A person at desk distance is hundreds of
+  pixels tall, so a few pixels of motion leaves almost complete overlap.
+- **Every accuracy number came from still images**, where the tracker cannot
+  run.
+- **The one script described as validating the payload stopped before the
+  tracker.**
+
+Each of those is reasonable on its own. Together they meant the only stage
+that gates all output had never been exercised under the one condition that
+defines this aircraft.
+
+### The fix
+
+The payload already estimated camera motion every frame - Lucas-Kanade flow
+and a partial affine fit, 6.6 ms - but only used it *after* tracking, to decide
+whether a tracked person had moved. `track_frame` now maps detections into the
+stabilised world frame *before* tracking, where a stationary person does not
+move between frames whatever the aircraft is doing. That turns every
+inter-frame motion into the 0 px case. Track output is mapped back into
+current-frame pixels for the record, the border check and geolocation;
+movement classification uses the world-frame box directly.
+
+The added cost is one 3 x 3 inverse and two vectorised box transforms: **0.21 ms
+per frame** on the development CPU, about 0.5% of inference.
+
+### Measured, 579 sequences, 2,611 people
+
+24 frames per sequence. Every configuration runs on identical detector output.
+
+| Motion | Conf | Configuration | Frame recall | Precision | People reported | Tracks | Spurious |
+|-------:|-----:|---------------|-------------:|----------:|----------------:|-------:|---------:|
+| 5 px | 0.25 | detector (ceiling) | 0.9309 | 0.8380 | 2,534 | - | - |
+| | | before-fix | 0.4180 | 0.9427 | 2,420 | 4,160 | 444 |
+| | | thresholds + seed score | 0.5377 | 0.9356 | 2,439 | 5,366 | 531 |
+| | | **current** | **0.9211** | 0.8611 | **2,485** | 3,042 | 500 |
+| 5 px | 0.05 | detector (ceiling) | 0.9603 | 0.6757 | 2,578 | - | - |
+| | | before-fix | 0.3314 | 0.9517 | 2,358 | 3,781 | 332 |
+| | | thresholds + seed score | 0.5512 | 0.9136 | 2,512 | 6,458 | 1,140 |
+| | | **current** | **0.9289** | 0.8377 | **2,537** | 3,743 | 1,098 |
+| **20 px** | 0.25 | detector (ceiling) | 0.9298 | 0.8364 | 2,529 | - | - |
+| | | **before-fix** | **0.0537** | 0.8719 | 1,830 | 3,066 | 362 |
+| | | thresholds + seed score | 0.0664 | 0.8813 | 1,850 | 3,616 | 383 |
+| | | **current** | **0.9038** | 0.8643 | **2,458** | 2,918 | 428 |
+| **20 px** | 0.05 | detector (ceiling) | 0.9584 | 0.6777 | 2,569 | - | - |
+| | | **before-fix** | **0.0466** | 0.8875 | 1,786 | 2,647 | 279 |
+| | | thresholds + seed score | 0.0724 | 0.7896 | 1,921 | 4,399 | 900 |
+| | | **current** | **0.9124** | 0.8386 | **2,509** | 3,529 | 949 |
+
+"Frame recall" is people matched per frame. "People reported" counts a person
+once if they were matched in any frame of their pass.
+
+**At flight speed, what the payload emits goes from 5% of people per frame to
+90%, against a detector ceiling of 93%.**
+
+### Reading the decomposition
+
+**Stabilisation is the dominant fix.** At 20 px/frame the threshold and score
+fixes together move frame recall from 0.05 to 0.07; stabilisation takes it to
+0.90.
+
+**The originally reported threshold issue is real on its own.** At a slow pan
+and conf 0.05, deriving the thresholds from the operating point and restoring
+the seed score recovers **154 people** (2,358 to 2,512) - the people the
+review predicted: those whose score never reached 0.25.
+
+**The score fix matters even at the default threshold.** At conf 0.25 the
+derived thresholds equal the old ones, so the difference between before-fix
+and the middle row is the fusion score alone - and it raises frame recall from
+0.42 to 0.54 at a slow pan. ByteTrack multiplies detection score into the
+match cost, so averaged scores made association harder as well as creating
+fewer tracks.
+
+**Tracking now adds precision rather than costing recall.** Current precision
+at conf 0.25 is 0.864 against the detector's 0.836: ByteTrack's two-frame
+confirmation filters single-frame false positives, which is the job it is for.
+
+### The person-level figure flatters the old runtime
+
+Every sequence starts a fresh tracker, and ByteTrack confirms every track on
+its first frame without waiting for a second match. So in these sequences
+every person visible in frame 1 is reported at least once, which is why the
+old runtime still shows 1,786 people reported at flight speed.
+
+In flight the tracker runs continuously, and "frame 1" happens once per
+mission. A person entering view mid-flight has to be matched across two
+frames to be confirmed - which at 20 px/frame in raw pixels essentially never
+happens. **The real figure for the old runtime in flight would be far below
+1,786.** The frame-recall column, 0.05, is the better guide to it.
+
+### What the lower threshold now costs
+
+Because `--conf` now actually reaches the tracker, the operating point is a
+real trade rather than a nominal one. At flight speed:
+
+| Conf | People reported | Tracks | Spurious tracks | On background images |
+|-----:|----------------:|-------:|----------------:|---------------------:|
+| 0.25 | 2,458 | 2,918 | 428 (15%) | 54 |
+| 0.05 | 2,509 | 3,529 | 949 (27%) | 111 |
+
+Moving from 0.25 to 0.05 reports 51 more people and 521 more spurious tracks.
+Section 37's mission-cost framing still applies, now to numbers that describe
+what the payload emits rather than what the detector sees.
+
+### Other fixes in this pass
+
+- **Letterbox.** One geometry function now drives both directions. Measured
+  worst-case error of the old inverse: 0.30 px on odd-sized frames, zero on
+  every sensor size this project has considered - real and latent, smaller
+  than the review estimated.
+- **`DEFAULT_THERMAL` was never the default.** It was defined as `"MT-011b"`,
+  but `payload.py` fell back to a hardcoded `"MT-005"` when no model was given.
+  The constant existed, was cited as proof of what runs, and did not decide it.
+- **`--device 0` crashed every caller except `payload.main()`**, which was the
+  only place a GPU index string was converted. `Detector` now does it.
+- **`realtime_detect.py`'s own loop has the same raw-pixel tracking** and is
+  marked superseded, with a warning at run time.
+- **`--no-ego-motion` now disables stabilised tracking too**, and says so.
+- **Section 46 was wrong** about the test sequence containing one person; it
+  contains 32. Corrected in place.
+
+### Not fixed, and why
+
+**The ICD already specified the safety net.** `payload_icd.md` defines
+`track_id` as "-1 if unassociated": a detection the tracker has not linked
+should still be reported. The payload never did that - it emits only confirmed
+tracks - and had it conformed to its own specification, this failure would
+have degraded to *reported without identity* rather than *silent*. It is not
+implemented here because it bypasses the two-frame confirmation that the table
+above shows is filtering false positives, and that needs measuring and a
+ground-station policy first. It is task A0.
+
+**Optical-flow failure is now more serious.** Tracking depends on ego-motion,
+and every record depends on tracking. Over water, fog or featureless ground,
+flow degrades and so does the output. Task A3.
+
+### Limits of this measurement
+
+Translation only, with perfect ground truth and easy optical flow: the scene is
+rigid and textured, and the motion is a pure shift. Rotation from banking,
+scale change from altitude, motion blur and featureless terrain are all
+untested, and each would stress the ego-motion estimate that tracking now
+depends on. These results are the case where stabilisation works as designed.
+Real flight video is still the test that matters.
+
+### The pattern
+
+Every finding in this section is the same one: the path that was measured was
+not the path that ships.
+
+| What was measured | What shipped |
+|-------------------|--------------|
+| Fusion with the seed's score | Fusion with the mean |
+| The detection stage | Detection, then a tracker that gated everything |
+| Tracking at a few pixels per frame | Flight at twenty |
+| `DEFAULT_THERMAL = "MT-011b"` | `"MT-005"` whenever `--model` was omitted |
+
+Section 46 assembled the payload specifically to close this gap and claimed to
+have done so. It had closed it up to the tracker, and the tracker was where the
+gap was. The evaluator added here runs the payload's own `track_frame`, so the
+measured path and the shipped path are now the same function.
