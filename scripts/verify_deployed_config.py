@@ -1,5 +1,5 @@
 """
-Does the assembled payload actually deliver what the parts promised?
+Does the payload's detection stage deliver what the parts promised?
 
 Every result in this project was measured on a component. The detector was
 benchmarked alone, weighted box fusion was compared offline against cached
@@ -7,9 +7,19 @@ boxes, the operating point came from a threshold sweep on saved predictions,
 and the pipeline timing was taken with a different model at a different
 threshold on a sequence with one person in it.
 
-None of that is the payload. This script runs the real thing - the same
-`Detector` the runtime uses, at the configuration the evidence recommends -
-over the held-out test split, and checks two things the parts cannot:
+This script runs the payload's own `Detector` - model, letterbox, inference
+and fusion, exactly as the runtime assembles them - over the held-out test
+split, and checks two things the parts cannot.
+
+**It stops before tracking, and that limit matters.** Every record the payload
+emits comes from a ByteTrack track, not from a detection, so the tracker is a
+gate between this stage and the output. It cannot be evaluated here: the test
+split is 579 independent still images, and tracking across unrelated scenes is
+meaningless. The numbers below are therefore detection-stage figures - an
+upper bound on what the payload emits, not a measurement of it. An earlier
+version of this docstring called this "the real thing" and "the payload"; it
+was not. `evaluate_tracking_gate.py` measures the tracker on sequences built
+from the same images.
 
 1. **Accuracy.** Does the assembled stack reproduce the offline numbers? If it
    does not, some component is configured differently from how it was
@@ -83,12 +93,16 @@ def main():
     model = args.model or payload.DEFAULT_THERMAL
 
     print("=" * 78)
-    print("Deployed configuration, assembled and measured")
+    print("Deployed detection stage, assembled and measured")
     print("=" * 78)
     print(f"detector    {model}")
     print(f"clustering  weighted box fusion at {payload.SINGLE_MODEL_FUSE_IOU}")
     print(f"NMS         opened to {payload.SINGLE_MODEL_NMS_IOU} so near-duplicates survive to be fused")
     print(f"device      {args.device}")
+    print()
+    print("Detection stage only - before tracking. The payload emits tracks,")
+    print("so these are an upper bound on its output. For the tracker's")
+    print("effect, run scripts/evaluate_tracking_gate.py.")
     print()
 
     thresholds = SWEEP if args.conf_sweep else [args.conf]
@@ -112,7 +126,7 @@ def main():
             height, width = frame.shape[:2]
 
             start = time.perf_counter()
-            boxes, _scores, _sources = detector(frame)
+            boxes, _scores, _votes = detector(frame)
             detect_ms.append((time.perf_counter() - start) * 1000)
 
             truth = load_truth(image_path.stem, width, height)

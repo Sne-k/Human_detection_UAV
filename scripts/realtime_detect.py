@@ -1,5 +1,26 @@
 """
-Real-time human-detection pipeline for the UAV payload.
+Real-time human-detection pipeline - superseded by payload.py for running.
+
+**Use scripts/payload.py to run the payload.** This file's standalone loop is
+kept because payload.py imports its components - EgoMotionEstimator,
+MovementTracker and open_source - but the loop itself is an older, parallel
+pipeline and it diverges from the deployed one in ways that matter:
+
+  - It tracks in raw pixels, then stabilises only for movement. From a moving
+    aircraft that breaks tracking outright: ByteTrack links boxes by overlap,
+    and at flight speed (about 20 px of ground motion per frame) a 12 x 19 px
+    person has none. Across 579 sequences built from the test split, at
+    20 px/frame raw-pixel tracking matched 5% of people per frame; payload.py,
+    tracking in the stabilised frame, matched 90%, against 93% for the
+    detector alone. See evaluate_tracking_gate.py and training_log.md
+    section 49.
+  - It has no weighted box fusion, and defaults to a superseded model.
+
+It remains useful for comparing stock trackers - `--tracker botsort.yaml`
+enables BoT-SORT's own camera-motion compensation - but its output is not the
+payload's output.
+
+Original description follows.
 
 This is the runtime counterpart to the training experiments: it takes a video
 file, image sequence or camera stream, runs the selected detector on every
@@ -655,6 +676,11 @@ def run(args):
 
 
 def main():
+    print("note: realtime_detect.py is superseded by payload.py - its loop tracks")
+    print("      in raw pixels, which does not associate at flight speed. See the")
+    print("      module docstring.")
+    print()
+
     parser = argparse.ArgumentParser(
         description="Real-time UAV human detection with movement classification",
     )
