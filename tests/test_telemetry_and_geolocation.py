@@ -207,3 +207,33 @@ def test_frames_must_increase():
     later = json.loads(json.dumps(GOOD))
     errors, _ = validate_jsonl.validate_record(GOOD, previous=later)
     assert any("does not increase" in e for e in errors)
+
+
+def test_a_long_recording_keeps_its_start(tmp_path):
+    """A live buffer keeps 30 s; a recording loaded whole must keep it all.
+    It did not, and every frame of a replay before its last 30 s lost its
+    ground fix (training_log section 53)."""
+
+    path = tmp_path / "long.jsonl"
+    path.write_text("\n".join(json.dumps({
+        "frame": f, "lat": 1.0, "lon": 2.0, "altitude_m": 100.0,
+        "roll_deg": 0.0, "pitch_deg": 0.0, "yaw_deg": 0.0}) for f in range(700)))
+    buffer = telemetry.load_jsonl(path, fps=7.0)
+
+    assert buffer.at(1.0) is not None
+    assert buffer.at(99.0) is not None
+
+
+def test_ground_point_follows_the_view_angle():
+    """From overhead the person is the centre of the box; from the side, its
+    bottom. Using the bottom at nadir put every fix half a box south
+    (training_log section 53)."""
+
+    box = [300.0, 200.0, 312.0, 220.0]
+    nadir = geolocate.Camera(640, 512, 50.0, mount_pitch_deg=90.0)
+    side = geolocate.Camera(640, 512, 50.0, mount_pitch_deg=0.0)
+    oblique = geolocate.Camera(640, 512, 50.0, mount_pitch_deg=45.0)
+
+    assert geolocate.ground_point(nadir, box) == pytest.approx((306.0, 210.0))
+    assert geolocate.ground_point(side, box) == pytest.approx((306.0, 220.0))
+    assert 210.0 < geolocate.ground_point(oblique, box)[1] < 220.0

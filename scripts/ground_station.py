@@ -119,14 +119,36 @@ class Picture:
             target["fixes"].append(fix)
 
     def best_fix(self, target):
-        """Where to send someone. For a person seen moving, the latest fix -
-        an older, tighter one is where they were. Otherwise the fix with the
-        smallest reported uncertainty."""
+        """
+        Where to send someone. For a person seen moving, the latest fix - an
+        older one is where they were.
+
+        Otherwise every fix, weighted by inverse variance. Picking the single
+        fix with the smallest reported uncertainty was biased: uncertainty
+        grows with the altitude reading, so the pick favoured fixes whose
+        altitude happened to read low, which pulls positions toward the
+        aircraft - 0.6 m on the simulated mission, 3.4 standard errors
+        (training_log section 53).
+
+        The uncertainty reported is the smallest single fix's, not the
+        combined one. Averaging N fixes divides it by sqrt(N) only if their
+        errors are independent, and GPS and attitude errors drift slowly:
+        within one pass they are largely the same error repeated.
+        """
 
         if target["latest"]["state"] == "moving":
             return target["latest"]
 
-        return min(target["fixes"], key=lambda f: f["error_m"])
+        fixes = target["fixes"]
+        weights = [1.0 / max(f["error_m"], 1e-3) ** 2 for f in fixes]
+        total = sum(weights)
+
+        return {
+            **min(fixes, key=lambda f: f["error_m"]),
+            "lat": sum(w * f["lat"] for w, f in zip(weights, fixes)) / total,
+            "lon": sum(w * f["lon"] for w, f in zip(weights, fixes)) / total,
+            "fixes_combined": len(fixes),
+        }
 
 
 def render(picture):

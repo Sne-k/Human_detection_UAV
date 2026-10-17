@@ -17,8 +17,9 @@ Method
 The ground is modelled as a horizontal plane at a known elevation. For each
 detection:
 
-1. The box's ground-contact point (bottom-centre of the box, where a standing
-   person meets the ground) is converted to a normalised image coordinate.
+1. The box's ground-contact point - where the person meets the ground: the
+   bottom of the box seen obliquely, its centre seen from overhead - is
+   converted to a normalised image coordinate. See `ground_point`.
 2. That is turned into a ray in camera coordinates using the camera's field of
    view.
 3. The ray is rotated into the world frame by the camera mount angle and the
@@ -41,8 +42,8 @@ about 1.7 m on the ground at nadir, and considerably worse at oblique angles.
 `estimate_error` reports this so the ground station can be told how much to
 trust each fix rather than being handed a bare coordinate.
 
-The bottom-centre convention also assumes the person is standing on the
-modelled ground plane. A person on a roof or a slope will be projected to the
+The ground-point convention also assumes the person is on the modelled
+ground plane. A person on a roof or a slope will be projected to the
 wrong place, and terrain elevation is not modelled.
 
 Usage:
@@ -330,19 +331,40 @@ def propagate_error(camera, px, py, telemetry):
 # Detection handling
 # ---------------------------------------------------------------------
 
-def locate_detection(camera, box, telemetry):
-    """
-    Geolocate one detection.
+# Width over height of a standing person, for placing the ground point.
+PERSON_WIDTH_TO_HEIGHT = 0.3
 
-    The ground-contact point is the bottom-centre of the box, where a standing
-    person meets the ground. The box centre would sit roughly at waist height
-    and project further from the aircraft.
+
+def ground_point(camera, box):
+    """
+    The pixel where the person meets the ground.
+
+    Seen from the side, that is the bottom of the box: the feet. From straight
+    overhead it is the centre - the box is the person's footprint. In between,
+    a standing person of height H and width w, seen at depression angle e,
+    spans H cos e + w sin e of the image vertically, of which the footprint is
+    the w sin e at the bottom; the ground point is the middle of that.
+
+    This used to be the bottom of the box at every angle. At nadir that put
+    every fix half a box south of the person - about 1 m at 100 m, a
+    systematic bias the ICD rules out, found by the simulated mission
+    (training_log section 53). Off nadir the correction shrinks quickly: 7 %
+    of the box height at 30 deg, 17 % at 60 deg, half at 90 deg.
     """
 
     x1, y1, x2, y2 = box
+    e = camera.mount_pitch
+    w = PERSON_WIDTH_TO_HEIGHT
 
-    px = (x1 + x2) / 2.0
-    py = y2
+    lift = (w * math.sin(e) / 2.0) / (math.cos(e) + w * math.sin(e))
+
+    return (x1 + x2) / 2.0, y2 - lift * (y2 - y1)
+
+
+def locate_detection(camera, box, telemetry):
+    """Geolocate one detection, from its ground point (`ground_point`)."""
+
+    px, py = ground_point(camera, box)
 
     result = project_to_ground(
         camera,
@@ -466,19 +488,16 @@ def demo():
           f"(expect 0, 0 - directly below the aircraft)")
 
     print()
-    print("   A detection box projects from its BOTTOM edge, not its centre,")
-    print("   so a box straddling the image centre lands slightly aft:")
+    print("   Looking straight down, a box projects from its centre - the")
+    print("   person's footprint - so a box centred below the aircraft lands")
+    print("   directly beneath it:")
 
     fix = locate_detection(
         camera, [310, 246, 330, 266], {**base, "roll_deg": 0, "pitch_deg": 0}
     )
 
-    expected = 100.0 * math.tan(
-        math.atan(((2 * 266 / camera.height) - 1) * math.tan(camera.vfov / 2))
-    )
-
-    print(f"   box bottom 10 px below centre -> north {fix['north_m']:+.2f} m "
-          f"(predicted {-expected:+.2f} m)")
+    print(f"   box centred on the image -> north {fix['north_m']:+.2f} m "
+          f"(predicted +0.00 m)")
     print(f"   error estimate +/- {fix['position_error_m']:.1f} m")
     print()
 

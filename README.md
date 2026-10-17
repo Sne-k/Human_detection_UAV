@@ -235,6 +235,13 @@ Detections the tracker has not yet confirmed are reported with `track_id` -1
 (dropping them lost one person in twenty - training_log section 51); the
 ground station shows them hollow and apart from confirmed targets.
 
+Fly the whole chain over a simulated mission with known truth, and score
+what reaches the ground station - or score any stream against it:
+
+```bash
+python scripts/simulate_mission.py --monte-carlo 200
+```
+
 Check the output against the interface contract, and run the tests:
 
 ```bash
@@ -354,6 +361,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `evaluate_ego_health.py` | Camera-motion failure modes and fallback policies |
 | `evaluate_tracking_gate.py` | Scores what the payload actually emits, through tracking, on drifting sequences with exact truth |
 | `evaluate_frame_drops.py` | Movement labels and track identity when frames are lost - one in k, random, bursts |
+| `simulate_mission.py` | Whole chain over geo-referenced real imagery: people found, false targets, position error vs reported uncertainty |
 
 ### Dataset preparation
 

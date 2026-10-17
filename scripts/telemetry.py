@@ -108,6 +108,9 @@ class _Series:
                 self.times.insert(index, t)
                 self.values.insert(index, values)
 
+            if self.history_s is None:
+                return
+
             cutoff = self.times[-1] - self.history_s
 
             while self.times and self.times[0] < cutoff:
@@ -164,9 +167,13 @@ class StateBuffer:
     """Position and attitude, interpolated to any requested time."""
 
     def __init__(self, max_gap_s=MAX_GAP_S, hold_attitude_s=HOLD_ATTITUDE_S,
-                 hold_position_s=HOLD_POSITION_S):
-        self.position = _Series(POSITION_FIELDS)
-        self.attitude = _Series(ATTITUDE_FIELDS, angular=("yaw_deg",))
+                 hold_position_s=HOLD_POSITION_S, history_s=30.0):
+        # history_s bounds memory on a live link, where samples arrive for
+        # the length of a flight. None keeps everything - for a recording,
+        # which is loaded whole before the first frame is processed.
+        self.position = _Series(POSITION_FIELDS, history_s=history_s)
+        self.attitude = _Series(ATTITUDE_FIELDS, angular=("yaw_deg",),
+                                history_s=history_s)
         self.max_gap_s = max_gap_s
         self.hold_attitude_s = hold_attitude_s
         self.hold_position_s = hold_position_s
@@ -228,9 +235,14 @@ def load_jsonl(path, fps):
     A record's time is its `t` or `timestamp_s` field when present, and
     `frame / fps` otherwise - the format of the synthetic test sequence. A
     record may carry position fields, attitude fields or both.
+
+    Nothing is pruned. A live buffer keeps the last 30 s, which applied to a
+    recording loaded whole discarded everything but its final 30 s - so on a
+    replay longer than that, every earlier frame had no aircraft state and
+    no ground fix (training_log section 53).
     """
 
-    buffer = StateBuffer()
+    buffer = StateBuffer(history_s=None)
 
     with open(path, encoding="utf-8") as f:
         for line in f:

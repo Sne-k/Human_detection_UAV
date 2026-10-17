@@ -225,6 +225,17 @@ confidence than the measurement supports. The error estimate combines attitude,
 altitude and GPS terms and grows with slant range. The ground station must
 display it.
 
+A person seen in several frames gets several fixes. The ground station
+places a still person at their inverse-variance mean and reports the
+smallest single fix's uncertainty - not that divided by sqrt(N), because
+GPS and attitude errors drift and one pass largely repeats one error. On
+the simulated missions this sigma is conservative by about a quarter
+(training_log.md section 53).
+
+The ground point is where the person meets the ground: the box centre
+from overhead, its bottom seen from the side, and in between by the
+camera's depression angle (`geolocate.ground_point`).
+
 ### Unconfirmed detections (`track_id` -1)
 
 A detection the tracker has not confirmed is still reported, with
@@ -282,6 +293,16 @@ reported `ground.lat/lon` against survey.
 **Acceptance:** median error within the reported `position_error_m`, with no
 systematic bias in along-track or across-track direction. A systematic bias
 indicates a mounting-angle or frame-convention error rather than noise.
+
+**Judge it over several flights, not one.** GPS and altitude errors drift
+over tens of seconds, so every fix in one pass shares most of one error. On
+the simulated missions an honest payload fails the median test on about 2 %
+of single flights, and one flight's mean offset is that flight's GPS drift,
+not a bias. Fly at least three passes on separate occasions; judge bias by
+the mean offset across them; treat one failed pass as a reason to repeat,
+not a verdict. Recording the aircraft with RTK, where available, separates
+the payload's error from the autopilot's. `simulate_mission.py
+--monte-carlo` reproduces this analysis.
 
 ---
 

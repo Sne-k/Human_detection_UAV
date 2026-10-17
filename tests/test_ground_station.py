@@ -111,3 +111,20 @@ def test_a_refusing_link_never_stops_detection(tmp_path, monkeypatch):
     assert summary["frames"] == 10
     assert summary["udp_sent"] == 0
     assert summary["udp_errors"] == 10
+
+
+def test_a_still_target_is_placed_by_all_its_fixes():
+    """Picking the single tightest fix was biased (training_log section 53);
+    fixes are now averaged by inverse variance, and the uncertainty claimed
+    is the tightest single fix's - not divided by sqrt(N), because flight
+    errors drift and one pass largely repeats one error."""
+
+    picture = ground_station.Picture()
+    picture.add(record(0, [detection(5, 12.9700, 77.59, 4.0)]))
+    picture.add(record(1, [detection(5, 12.9702, 77.59, 4.0)]))
+    picture.add(record(2, [detection(5, 12.9710, 77.59, 40.0)]))
+
+    best = picture.best_fix(picture.targets[5])
+    assert best["lat"] == pytest.approx(12.9701, abs=2e-5)
+    assert best["error_m"] == 4.0
+    assert best["fixes_combined"] == 3

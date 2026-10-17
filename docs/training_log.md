@@ -3879,3 +3879,116 @@ of what overlap association tolerates; a runner fails. Inflating boxes for
 association only would help, at the risk of swapping the identities of
 people standing close together, so it goes to the tracker stress suite (B4)
 to be measured on crowded scenes rather than adopted here.
+
+---
+
+## 53. The Whole Chain, Over Ground Where the Answer Is Known
+
+Every part of the payload had been tested on its own. `simulate_mission.py`
+flies all of it - video, telemetry, detection, tracking, geolocation, the
+ground station - and scores what a rescue coordinator would be told: people
+found, where, how sure, and how many targets were false.
+
+**The ground** is a strip of 24 real HIT-UAV test images, stacked along
+track at one ground sampling distance, 1.7 km long. Only steep views
+(camera pitch 80-90 deg, from the file names) are used, so treating them as
+nadir imagery is honest, and only images with people. Every labelled person
+becomes a fixed point with a latitude and longitude.
+
+**The flight** is level and nadir at 100 m and 20 m/s, at 7 FPS: 601 frames.
+For a level nadir pinhole camera, crops of the strip are exactly what the
+camera sees. Telemetry is the truth plus errors at the sigmas `geolocate.py`
+assumes, each drifting as a Gauss-Markov process - 30 s correlation for GPS
+and barometric altitude, 2 s for attitude - because one flight's errors are
+mostly one error repeated, and white noise would make averaging look far
+better than it is.
+
+**Identity is scored in pixels.** Each frame's truth is exact, so every
+detection is assigned to the labelled person its box sits on, and every
+track to the person it sat on most. The first scorer matched fixes to
+people by ground distance and mis-assigned within groups standing closer
+than the fix error - it reported 76 % found where the truth was 95 %.
+
+### Three faults, found and fixed
+
+**1. A recording longer than 30 s lost everything but its last 30 s.** The
+telemetry buffer keeps 30 s to bound memory on a live link, and
+`load_jsonl` used the same buffer for a file loaded whole. On the first
+mission 390 of 601 frames had no aircraft state, and 25 % of people were
+found. Every replay of a real flight log would have done this. A recording
+is now kept whole; a test pins it.
+
+**2. At nadir, every fix sat half a box south.** The ground point was the
+bottom-centre of the box - right for an oblique view, where that is the
+feet, wrong from overhead, where the box is the person's footprint. Now it
+depends on the depression angle: the centre at 90 deg, the bottom at 0, and
+for a standing person in between (`geolocate.ground_point`). The old rule's
+offset is half a box, about 1 m at 100 m, and the first scorer measured
+-0.96 m north; now, per detection with perfect telemetry, it is +0.01 /
++0.03 m.
+
+**3. Choosing each target's tightest fix was itself biased.** The ground
+station reported the fix with the smallest uncertainty. But uncertainty
+grows with the altitude reading, so the choice favoured fixes whose
+altitude read low, which pulls positions toward the aircraft: -0.61 m north,
+3.4 standard errors, with every individual fix unbiased. It now places a
+still person at the inverse-variance mean of all their fixes, and reports
+the smallest single fix's sigma - deliberately not divided by sqrt(N),
+because drifting errors do not average out within a pass.
+
+### Result
+
+Three missions, different tiles:
+
+| Mission | People | Found (confirmed) | Incl. unconfirmed | Second identities | On no labelled person |
+|---------|-------:|------------------:|------------------:|------------------:|----------------------:|
+| seed 0 | 185 | 176 (95 %) | 182 | 6 | 23 |
+| seed 1 | 220 | 215 (98 %) | 220 | 10 | 19 |
+| seed 2 | 220 | 213 (97 %) | 218 | 11 | 18 |
+
+Targets on no labelled person were inspected: some are clearly people
+HIT-UAV did not label, others real false positives - a hot spot, a dark
+dot on a road edge, an object on a seam between tiles. No stationary
+person was labelled moving on any mission.
+
+**Geolocation**, re-run under 200 independent instrument-error draws per
+mission (`--monte-carlo`; detections do not depend on telemetry, only
+their positions do, so one flight can be re-geolocated many times):
+
+| | seed 0 | seed 1 | seed 2 |
+|---|---:|---:|---:|
+| Flight median error, median of draws | 2.63 m | 2.68 m | 2.76 m |
+| ... 90th percentile | 3.53 m | 3.69 m | 3.63 m |
+| Reported sigma, median | 4.38 m | 4.35 m | 4.41 m |
+| RMS error / RMS sigma | 0.74 | 0.74 | 0.75 |
+| Targets within 1 / 2 sigma | 84 / 100 % | 84 / 100 % | 83 / 100 % |
+| Single flights passing the ICD median test | 100 % | 98 % | 98 % |
+| Bias across draws (east / north) | -0.05 / -0.09 m | +0.08 / +0.05 m | +0.09 / +0.04 m |
+
+Bias standard error 0.09 m: no systematic bias. The reported sigma is
+conservative by about a quarter - honest, and slightly pessimistic, because
+averaging a pass's fixes does cancel the fast attitude error that the
+reported sigma, by design, gives no credit for.
+
+### What this means for flight acceptance
+
+The seed 2 mission as flown failed the ICD median test: 4.78 m against
+4.41 m. Its GPS error had drifted to -1.0 / -3.3 m for the whole pass, which
+every target shared. The Monte Carlo puts that at about a 2 % event for an
+honest payload. A single flight test over surveyed markers would have
+called a correct payload broken - and one flight's mean offset, which the
+ICD reads as bias, was entirely that flight's GPS drift.
+
+So the ICD's geolocation acceptance now says to judge over at least three
+passes on separate occasions, bias by the mean across them, and a single
+failure as a reason to repeat. RTK on the aircraft, where available,
+separates the payload's error from the autopilot's.
+
+### Limits
+
+No wind, roll, terrain or altitude change; a static scene apart from camera
+motion; seams between images that no real ground has. People in the tiles
+were imaged at 60-130 m and are rendered at the scale they were captured,
+not rescaled to 100 m. The payload ran at 15 FPS on the development CPU, so
+every frame was processed; on the Pi it would run at 3.6-6.1 FPS, whose
+effect on tracking and movement section 52 measured.
