@@ -753,6 +753,41 @@ def build_tracker(frame_rate, conf=CONF):
     return BYTETracker(args)
 
 
+# A frame interval this many times the recent median counts as missed frames.
+# ByteTrack predicts one step per update, so after a gap a moving person's
+# track is predicted where they were a frame ago, the box no longer overlaps,
+# and the track is lost and re-created under a new identity: in a sequence
+# with bursts of lost frames one walking person became eight targets
+# (training_log section 52). Stationary people survive, because in the
+# stabilised frame they do not move. Stepping the tracker through the missed
+# frames with no detections lets its motion model keep pace.
+GAP_FACTOR = 1.5
+BRIDGE_MAX_STEPS = 30   # = track_buffer; a longer gap ends every track anyway
+
+
+def missed_steps(interval, recent):
+    """Frames missed before this one, judged against recent intervals."""
+
+    if not recent or interval <= 0:
+        return 0
+
+    nominal = float(np.median(recent))
+
+    if nominal <= 0 or interval < GAP_FACTOR * nominal:
+        return 0
+
+    return min(int(round(interval / nominal)) - 1, BRIDGE_MAX_STEPS)
+
+
+def bridge_gap(tracker, steps, frame):
+    """Advance the tracker through missed frames."""
+
+    empty = Detections(np.zeros((0, 4)), np.zeros(0))
+
+    for _ in range(steps):
+        tracker.update(empty, frame)
+
+
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
@@ -1134,7 +1169,20 @@ def main():
             # Not on the main thread, or unsupported on this platform.
             pass
 
+    # A live camera is timed on the clock even without telemetry. Stream
+    # time - frame index over the camera's nominal rate - is wrong whenever
+    # processing is slower than the camera, which on the Pi it always is.
+    if str(args.source).isdigit() and not args.telemetry:
+        live_clock = True
+
+    last_frame_time = None
+    recent_intervals = deque(maxlen=30)
+    steps_bridged = 0
+
     for frame in frames:
+        # A source may supply its own capture time with each frame.
+        frame, source_time = frame if isinstance(frame, tuple) else (frame, None)
+
         # A single bad frame, or a single exception anywhere in the
         # per-frame work, must cost that frame - not the rest of the
         # mission. Each is counted and the run continues.
@@ -1154,9 +1202,23 @@ def main():
 
             # Capture time: the shared local clock for a live stream with live
             # telemetry, stream time otherwise.
-            frame_time = (
-                telemetry_mod.CLOCK() if live_clock else frame_index / fps
-            )
+            if source_time is not None:
+                frame_time = source_time
+            elif live_clock:
+                frame_time = telemetry_mod.CLOCK()
+            else:
+                frame_time = frame_index / fps
+
+            if last_frame_time is not None:
+                interval = frame_time - last_frame_time
+                missed = missed_steps(interval, recent_intervals)
+                recent_intervals.append(interval)
+
+                if missed:
+                    bridge_gap(tracker, missed, frame)
+                    steps_bridged += missed
+
+            last_frame_time = frame_time
 
             cumulative = (
                 ego.update(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
@@ -1198,7 +1260,7 @@ def main():
                     or y2 >= height - args.border_margin
                 )
 
-                movement.update(track_id, world, frame_index, at_border)
+                movement.update(track_id, world, frame_index, at_border, frame_time)
                 state, displacement = movement.state(track_id)
 
                 if ego is not None and clean_steps < args.history:
@@ -1348,6 +1410,7 @@ def main():
         "bad_frames_skipped": bad_frames,
         "frame_errors": frame_errors,
         "stream_failed": stream_failed,
+        "tracker_steps_bridged": steps_bridged,
         "udp_sent": udp_sent if udp is not None else None,
         "udp_errors": udp_errors if udp is not None else None,
         "frames_logged": (

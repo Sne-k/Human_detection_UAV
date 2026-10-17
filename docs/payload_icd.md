@@ -247,7 +247,10 @@ delays or stops detection. The on-board file remains the complete record.
 
 `edge` and `unknown` mean the movement state is **withheld**, not that the
 person is stationary. Movement is also withheld until the camera-motion
-estimate has been `ok` for a full history window. A person is reported regardless of movement state. See
+estimate has been `ok` for a full history window, and `stationary` is
+withheld until a track's own history is a full window or spans two seconds -
+a short history under the threshold is not evidence of stillness. A person
+is reported regardless of movement state. See
 `realtime_pipeline.md` section 2.
 
 ### Bandwidth

@@ -90,6 +90,14 @@ HISTORY_FRAMES = 15           # positions kept per track
 MOVEMENT_THRESHOLD_PX = 15.0  # stabilised displacement to call a track moving
 MIN_HISTORY_FOR_STATE = 5     # frames needed before a state is reported
 
+# "Stationary" needs a full window, or a history spanning this long. Below
+# the threshold over a short history is not evidence of stillness: a walking
+# person covers 9-14 px in their first five observations at 15 FPS. 2 s is
+# what the full window spans at the 7 FPS design rate; at search-mode rates a
+# person is in view for about five frames, which span more than that, and
+# stillness is exactly the label a rescue team most needs from them.
+STATIONARY_MIN_SPAN_S = 2.0
+
 # A box touching the frame edge is only partly inside the field of view, so its
 # centroid shifts as the person enters or leaves rather than as they move.
 # Such tracks are still detected and reported; only their movement state is
@@ -317,19 +325,21 @@ class MovementTracker:
         min_history=MIN_HISTORY_FOR_STATE,
     ):
         self.history = {}
+        self.times = {}
         self.last_seen = {}
         self.border_tracks = set()
         self.history_frames = history_frames
         self.threshold_px = threshold_px
         self.min_history = min_history
 
-    def update(self, track_id, world_point, frame_index, at_border=False):
+    def update(self, track_id, world_point, frame_index, at_border=False, t=None):
         positions = self.history.setdefault(
             track_id,
             deque(maxlen=self.history_frames),
         )
 
         positions.append(world_point)
+        self.times.setdefault(track_id, deque(maxlen=self.history_frames)).append(t)
         self.last_seen[track_id] = frame_index
 
         if at_border:
@@ -354,6 +364,19 @@ class MovementTracker:
         if displacement >= self.threshold_px:
             return "moving", displacement
 
+        # Crossing the threshold early is evidence of movement; staying under
+        # it over a short history is not evidence of stillness. This labelled
+        # every newly formed track on a moving person "stationary" until the
+        # window filled (training_log section 52).
+        if len(positions) < self.history_frames:
+            times = self.times.get(track_id, ())
+            span = (times[-1] - times[0]
+                    if times and times[0] is not None and times[-1] is not None
+                    else 0.0)
+
+            if span < STATIONARY_MIN_SPAN_S:
+                return "unknown", displacement
+
         return "stationary", displacement
 
     def prune(self, frame_index, max_age=60):
@@ -367,6 +390,7 @@ class MovementTracker:
 
         for track_id in stale:
             self.history.pop(track_id, None)
+            self.times.pop(track_id, None)
             self.last_seen.pop(track_id, None)
             self.border_tracks.discard(track_id)
 

@@ -3808,3 +3808,74 @@ is the best case for optical flow, and a person crosses the 640 px width in
 about 7 frames at 90 px/frame, where the 512 px along-track height of a
 real pass gives about 5. Movement classification at low frame rates - its
 history and threshold are in frames - is untested; that is B3.
+
+---
+
+## 52. Lost Frames: Split Identities and Premature Stillness
+
+Movement is decided from a track's last 15 observations against a 15 px
+threshold, so anything that changes the time between observations changes
+what that threshold means - a slower computer, search-mode rates, a camera
+that drops frames. `evaluate_frame_drops.py` replays the pan sequence
+(`make_test_sequence.py`: 31 stationary people, one composited walker on a known
+trajectory) through the real payload with frames removed, and scores every
+movement label.
+
+### What broke
+
+**A gap split a moving person into new targets.** ByteTrack predicts one
+step per update. After a gap the walker's track is predicted where they were
+one frame ago, the box no longer overlaps, the detection goes unmatched, and
+a new track forms under a new identity. Stationary people survive because in
+the stabilised frame they do not move. With bursts of four lost frames in
+every twelve, **one walker became eight targets** on the ground station.
+
+**Each new track was then called stationary.** A state was reported from the
+fifth observation, but the threshold was set for a full window, and a walker
+covers 9-14 px in five observations at 15 FPS. Under bursts, 11 of the
+walker's 30 labels said `stationary`.
+
+### Fixes
+
+- The payload times every frame - by the source's capture time where it
+  supplies one, the clock for a live camera - and when an interval is more
+  than 1.5x the recent median, steps the tracker through the missed frames
+  with no detections, so its motion model keeps pace.
+- Below the threshold, `stationary` now needs a full window *or* two seconds
+  of history. Crossing the threshold early still declares `moving`: that is
+  evidence; staying under it briefly is not. Two seconds is what the full
+  window spans at the 7 FPS design rate, and it keeps `stationary` available
+  in search mode, where a person is in view for only about five frames that
+  span three seconds or more - and stillness is what a rescue team most
+  needs to know.
+- Found on the way: a live camera without telemetry was timed as frame
+  index / 30 FPS, wrong whenever processing is slower than the camera,
+  which on the Pi is always. It now uses the clock.
+
+### Result
+
+On a 600-frame version of the sequence:
+
+| Pattern | Walker's identities | Walker labelled moving | Stationary people labelled moving |
+|---------|--------------------:|-----------------------:|----------------------------------:|
+| All frames, 15 FPS | 1 | 100 % | 0 of 3,009 |
+| One in 2 / 3 / 5 | 1 | 100 % | 0 |
+| Random 20 % / 40 % lost | 1 | 100 % | 0 |
+| Bursts 4 of 12, 8 of 24 | 1 (was 8 and 5) | 100 % | 0 |
+| One in 8 / 11 (1.9 / 1.4 FPS) | **never confirmed** | - | 0 of 218 / 129 |
+
+Stationary noise stays at 1-8 px against the 15 px threshold throughout;
+no stationary person was labelled moving under any pattern, before or after.
+
+### What remains
+
+At one frame in eight or fewer, the walker moves about its own width
+between processed frames and is **never confirmed as a track**: the first
+two sightings, which a new track needs to match, do not overlap. It is still
+reported - 39 and 29 sightings, as unconfirmed `-1` records, because of
+section 51 - but with no identity or movement state. At 1.34 FPS and 100 m a
+walker at 1.4 m/s moves about 60 % of their own width per frame, at the edge
+of what overlap association tolerates; a runner fails. Inflating boxes for
+association only would help, at the risk of swapping the identities of
+people standing close together, so it goes to the tracker stress suite (B4)
+to be measured on crowded scenes rather than adopted here.

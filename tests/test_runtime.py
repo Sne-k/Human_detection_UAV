@@ -239,3 +239,77 @@ def test_frame_logger_failure_does_not_raise(tmp_path, monkeypatch):
     logger.consider(np.zeros((8, 8, 3), np.uint8), 0, 0.0,
                     np.array([[1.0, 1, 4, 6]]), np.array([0.3]), False)
     assert logger.failed and logger.saved == 0
+
+
+# ------------------------------------------------- frame drops (task B3)
+
+def test_missed_steps_judges_gaps_against_recent_intervals():
+    recent = [0.1] * 10
+    assert payload.missed_steps(0.1, recent) == 0
+    assert payload.missed_steps(0.12, recent) == 0
+    assert payload.missed_steps(0.5, recent) == 4
+    assert payload.missed_steps(100.0, recent) == payload.BRIDGE_MAX_STEPS
+    assert payload.missed_steps(0.5, []) == 0
+
+
+def _walker_identities(bridge):
+    """A person walking 3 px/frame in the stabilised frame, frames 6-9 lost."""
+
+    tracker = payload.build_tracker(7.0, 0.25)
+    ids = set()
+
+    for t in range(16):
+        if 6 <= t <= 9:
+            continue
+
+        if t == 10 and bridge:
+            payload.bridge_gap(tracker, 4, None)
+
+        x = 100.0 + 3.0 * t
+        rows, _ = payload.track_frame(
+            tracker, np.array([[x, 200.0, x + 12.0, 219.0]]), np.array([0.8]),
+            None, np.eye(3))
+        ids.update(int(r[4]) for r in rows)
+
+    return ids
+
+
+def test_a_gap_splits_a_moving_person_without_bridging():
+    """The fault found in section 52: one walker, two identities."""
+
+    assert len(_walker_identities(bridge=False)) == 2
+
+
+def test_bridging_the_gap_keeps_one_identity():
+    assert len(_walker_identities(bridge=True)) == 1
+
+
+def _movement(points, times=None):
+    from realtime_detect import MovementTracker
+
+    tracker = MovementTracker()
+
+    for i, point in enumerate(points):
+        tracker.update(1, point, i, t=None if times is None else times[i])
+
+    return tracker.state(1)[0]
+
+
+def test_short_history_under_the_threshold_is_not_stationary():
+    # 10 px over five observations at 15 FPS: a walker's first third of a second.
+    assert _movement([(100.0 + 2.5 * i, 0.0) for i in range(5)],
+                     [i / 15 for i in range(5)]) == "unknown"
+
+
+def test_short_history_over_the_threshold_is_moving():
+    assert _movement([(100.0 + 5.0 * i, 0.0) for i in range(5)],
+                     [i / 15 for i in range(5)]) == "moving"
+
+
+def test_few_frames_spanning_enough_time_can_be_stationary():
+    # Search mode: five sightings across three seconds.
+    assert _movement([(100.0, 0.0)] * 5, [i * 0.75 for i in range(5)]) == "stationary"
+
+
+def test_full_window_without_times_is_stationary():
+    assert _movement([(100.0, 0.0)] * 15) == "stationary"

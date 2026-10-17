@@ -353,6 +353,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `geolocation_sensitivity.py` | Frame conventions and the ICD geolocation acceptance test, simulated |
 | `evaluate_ego_health.py` | Camera-motion failure modes and fallback policies |
 | `evaluate_tracking_gate.py` | Scores what the payload actually emits, through tracking, on drifting sequences with exact truth |
+| `evaluate_frame_drops.py` | Movement labels and track identity when frames are lost - one in k, random, bursts |
 
 ### Dataset preparation
 
