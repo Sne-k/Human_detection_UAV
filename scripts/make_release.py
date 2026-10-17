@@ -50,6 +50,9 @@ EVIDENCE = [
     "ego_health/ego_health_probe.json",
     "single_model_wbf/confidence_sweep.json",
     "fov_study/fov_study_100m.json",
+    "frame_drops/frame_drops_long.json",
+    "tracker_stress/tracker_stress.json",
+    "mission/seed0_tiles24/score.json",
 ]
 
 
@@ -135,6 +138,17 @@ def build(name, model):
         "track_low_thresh": payload.TRACK_LOW_THRESH,
         "ego_motion": payload.EGO_SETTINGS,
         "unassociated_default": payload.UNASSOCIATED_DEFAULT,
+        "assoc_scale": payload.ASSOC_SCALE,
+        "gap_factor": payload.GAP_FACTOR,
+        "bridge_max_steps": payload.BRIDGE_MAX_STEPS,
+    }
+
+    import realtime_detect
+    runtime["movement"] = {
+        "history_frames": realtime_detect.HISTORY_FRAMES,
+        "threshold_px": realtime_detect.MOVEMENT_THRESHOLD_PX,
+        "min_history": realtime_detect.MIN_HISTORY_FOR_STATE,
+        "stationary_min_span_s": realtime_detect.STATIONARY_MIN_SPAN_S,
     }
 
     import geolocate
@@ -145,6 +159,8 @@ def build(name, model):
         "altitude_m": geolocate.SIGMA_ALTITUDE_M,
         "gps_m": geolocate.SIGMA_GPS_M,
     }
+    runtime["ground_point_person_width_to_height"] = geolocate.PERSON_WIDTH_TO_HEIGHT
+    runtime["ground_station_fix"] = "inverse-variance mean; tightest single sigma"
 
     args_yaml = (run / "args.yaml").read_text(encoding="utf-8") if (run / "args.yaml").exists() else ""
     seed = next((line.split(":", 1)[1].strip() for line in args_yaml.splitlines()

@@ -313,3 +313,21 @@ def test_few_frames_spanning_enough_time_can_be_stationary():
 
 def test_full_window_without_times_is_stationary():
     assert _movement([(100.0, 0.0)] * 15) == "stationary"
+
+
+def test_association_scale_never_reaches_the_output(monkeypatch):
+    """Boxes are enlarged for association only; what is reported, and what
+    movement is measured from, must be the detector's own size."""
+
+    monkeypatch.setattr(payload, "ASSOC_SCALE", 2.0)
+    tracker = payload.build_tracker(7.0, 0.25)
+    box = np.array([[100.0, 200.0, 112.0, 219.0]])
+
+    for t in range(3):
+        cumulative = np.eye(3)
+        cumulative[0, 2] = 20.0 * t
+        rows, world = payload.track_frame(tracker, box + [20.0 * t, 0, 20.0 * t, 0],
+                                          np.array([0.8]), None, cumulative)
+
+    assert rows[0, :4] == pytest.approx([140.0, 200.0, 152.0, 219.0], abs=0.5)
+    assert world[0] == pytest.approx([100.0, 200.0, 112.0, 219.0], abs=0.5)

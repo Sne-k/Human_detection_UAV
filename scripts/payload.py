@@ -497,6 +497,36 @@ def transform_boxes(boxes, matrix):
     )
 
 
+# Boxes are enlarged by this factor for association only, and shrunk back
+# before anything is reported. ByteTrack associates by overlap, and a person
+# who moves about their own width between processed frames - a walker below
+# about 2 FPS - has none, so is never confirmed (training_log section 52).
+#
+# Measured in evaluate_tracker_stress.py (training_log section 54). At 1.4
+# FPS, 2x confirms 71 of 120 walkers instead of 33 - at the cost of five
+# times as many track IDs reported on two different people (15 against 3).
+# At 7 FPS it confirms 3 more of 120 and costs about one swap. The Pi runs at
+# 3.6-6.1 FPS, so 1.0 stays the default; --assoc-scale is for a deliberate
+# low-rate search configuration, where unconfirmed reporting (section 51)
+# already puts those walkers on the map without an identity.
+ASSOC_SCALE = 1.0
+
+
+def scale_boxes(boxes, factor):
+    """Scale xyxy boxes about their centres."""
+
+    if factor == 1.0 or not len(boxes):
+        return boxes
+
+    boxes = np.asarray(boxes, dtype=np.float64)
+    cx = (boxes[:, 0] + boxes[:, 2]) / 2.0
+    cy = (boxes[:, 1] + boxes[:, 3]) / 2.0
+    hw = (boxes[:, 2] - boxes[:, 0]) * factor / 2.0
+    hh = (boxes[:, 3] - boxes[:, 1]) * factor / 2.0
+
+    return np.stack([cx - hw, cy - hh, cx + hw, cy + hh], axis=1)
+
+
 def track_frame(tracker, boxes, scores, frame, cumulative=None):
     """
     One frame through the tracker, stabilised by ego-motion when available.
@@ -528,10 +558,15 @@ def track_frame(tracker, boxes, scores, frame, cumulative=None):
     """
 
     if cumulative is None:
-        rows = tracker.update(Detections(boxes, scores), frame)
+        rows = tracker.update(
+            Detections(scale_boxes(boxes, ASSOC_SCALE), scores), frame
+        )
 
         if not len(rows):
             return rows, np.zeros((0, 4))
+
+        rows = rows.copy()
+        rows[:, :4] = scale_boxes(rows[:, :4], 1.0 / ASSOC_SCALE)
 
         return rows, rows[:, :4].copy()
 
@@ -543,13 +578,15 @@ def track_frame(tracker, boxes, scores, frame, cumulative=None):
         return track_frame(tracker, boxes, scores, frame, None)
 
     rows = tracker.update(
-        Detections(transform_boxes(boxes, to_world), scores), frame
+        Detections(scale_boxes(transform_boxes(boxes, to_world), ASSOC_SCALE),
+                   scores),
+        frame,
     )
 
     if not len(rows):
         return rows, np.zeros((0, 4))
 
-    world = rows[:, :4].astype(np.float64).copy()
+    world = scale_boxes(rows[:, :4].astype(np.float64), 1.0 / ASSOC_SCALE)
 
     rows = rows.copy()
     rows[:, :4] = transform_boxes(world, cumulative)
@@ -854,6 +891,15 @@ def main():
              "detections - with pre-labels, for offline fine-tuning.",
     )
     parser.add_argument(
+        "--assoc-scale",
+        type=float,
+        default=ASSOC_SCALE,
+        help="Enlarge boxes by this factor for tracker association only. "
+             "2.0 roughly doubles the walkers confirmed below 2 FPS, and "
+             "multiplies identity swaps by five. See training_log.md "
+             "section 54.",
+    )
+    parser.add_argument(
         "--unassociated",
         choices=["report", "drop"],
         default=UNASSOCIATED_DEFAULT,
@@ -939,6 +985,9 @@ def main():
           f"{total or 'unknown'} frames")
 
     tracker = build_tracker(fps, args.conf)
+
+    # track_frame reads the module setting; the flag only overrides it.
+    globals()["ASSOC_SCALE"] = args.assoc_scale
 
     if args.no_ego_motion:
         # Ego-motion used to serve movement classification alone. It now also

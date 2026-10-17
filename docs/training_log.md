@@ -3992,3 +3992,69 @@ were imaged at 60-130 m and are rendered at the scale they were captured,
 not rescaled to 100 m. The payload ran at 15 FPS on the development CPU, so
 every frame was processed; on the Pi it would run at 3.6-6.1 FPS, whose
 effect on tracking and movement section 52 measured.
+
+---
+
+## 54. Tracker Stress: Crossings, Turns, Descents, Search Mode
+
+`evaluate_tracking_gate.py` asked whether tracking lets people through.
+`evaluate_tracker_stress.py` asks whether it keeps them apart and keeps
+them whole. Each scene is a real steep-view HIT-UAV test image - its
+labelled people standing still - plus walkers composited onto known
+straight paths, under a virtual nadir camera with a known pose per frame.
+The payload's own detector, ego-motion, tracker and movement classifier run
+on the rendered frames; 40 images per scene. Every association setting runs
+on identical detector and ego-motion output.
+
+Steep views only (80-90 deg). A first trial rotated oblique images for the
+turn scene, which shows standing people tilted over - something no camera
+sees, since an oblique camera pans when the aircraft yaws - and the
+detector's recall fell accordingly. With a nadir camera, in-plane rotation
+is what a turn really does.
+
+At association scale 1.0 (the deployed tracker):
+
+| Scene | Walkers found by detector | Covered by a track | Confirmed | Identities per walker | Merged IDs |
+|-------|-----:|-----:|-----:|-----:|-----:|
+| Cruise, 20 px/frame, 1.4 m/s | 70 % | 62 % | 91 / 120 | 1.12 | 5 |
+| Runners, 4 m/s | 69 % | 57 % | 95 / 120 | 1.15 | 3 |
+| Head-on crossing | 58 % | 52 % | 64 / 80 | 1.77 | 16 |
+| Turn, 21 deg/s | 67 % | 61 % | 95 / 120 | 1.14 | 3 |
+| Descent, 100 to 71 m | 69 % | 61 % | 93 / 120 | 1.11 | 3 |
+| Search, 1.4 FPS | 72 % | 15 % | 33 / 120 | 1.03 | 3 |
+
+Standing people: 91-94 % found by the detector and 87-90 % covered by a
+track in every 7 FPS scene, about 1.02 identities each; 0-9 of their many
+thousand labels said moving. Walkers' moving labels were 96-100 % right.
+
+**Turns and descents are handled.** Rotation and scale go through the
+similarity transform the ego-motion estimator measures, and identity
+holds as well as in straight flight.
+
+**Crossings are not, and no setting fixes them.** Two people walking
+head-on through each other share a box for several frames; the detector
+often sees one person (58 % of walker frames found), and the tracker hands
+identities across - 1.4-1.8 per walker and a merged identity in about 30 %
+of crossings (16 merged IDs over 40 scenes, against about 4 in scenes
+without a crossing). Positions stay right, so the map is not wrong about
+where people are, only about which is which. Overlap tracking of
+near-identical 12 px targets cannot do better; appearance features at that
+size carry little.
+
+**Search mode is where association breaks.** At 1.4 FPS a walker moves
+about their own width between frames and only 33 of 120 are confirmed.
+Enlarging boxes for association only:
+
+| Scale | Walkers confirmed | Walker coverage | Merged IDs, search | At 7 FPS cruise |
+|------:|-----:|-----:|-----:|-----|
+| 1.0 | 33 / 120 | 15 % | 3 | 91 / 120, 5 merged |
+| 1.5 | 59 / 120 | 34 % | 11 | 94 / 120, 6 merged |
+| 2.0 | 71 / 120 | 40 % | 15 | 94 / 120, 6 merged |
+| 2.5 | 79 / 120 | 45 % | 19 | 94 / 120, 6 merged |
+
+It works, and it costs: five times the identity swaps at 2x. At the Pi's
+3.6-6.1 FPS walkers move a fraction of their width per frame and the
+setting buys almost nothing. So the default stays 1.0, and
+`payload.py --assoc-scale 2.0` exists for a deliberate low-rate search
+configuration. Even without it, those walkers reach the map as unconfirmed
+detections (section 51) - with a position, without an identity.
