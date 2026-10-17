@@ -511,7 +511,7 @@ it depends on, so the ordering can be argued with rather than followed.
 
 | # | Task | Why |
 |---|------|-----|
-| C1 | **Field-of-view study** | The sensor-resolution study fixed FOV at 50 degrees, but pixels-on-target depends on resolution **and** FOV **and** altitude. A narrow FOV on a cheap sensor may beat a wide FOV on an expensive one. Live procurement decision, and the geometry is exact - no simulation of appearance needed. |
+| C1 | **Field-of-view study** | **Done.** `fov_study.py` and `deployment_target.md` section 3d-ii. Field of view and altitude turn out to be the same lever - a 69 degree lens at 100 m is identical to a 50 degree lens at 147 m - so under a 120 m ceiling a wider lens buys swath altitude cannot. Value choice: 384 x 288 behind about 57 degrees, 1.10x the reference's people found per hour at recall 0.88. Narrow lenses are the wrong way to rescue a cheap sensor. *Originally:* The sensor-resolution study fixed FOV at 50 degrees, but pixels-on-target depends on resolution **and** FOV **and** altitude. A narrow FOV on a cheap sensor may beat a wide FOV on an expensive one. Live procurement decision, and the geometry is exact - no simulation of appearance needed. |
 | C2 | **Buy a Raspberry Pi 5 and measure** | Every frame-rate figure here is a 3-5x extrapolation from x86. The entire compute argument rests on a factor that was estimated, not measured, and INT8 in particular may behave differently on ARM. The board costs a fraction of the camera and is independent of which camera is chosen. |
 
 ### D. Demonstrator - after the above

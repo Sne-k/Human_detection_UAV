@@ -361,6 +361,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `export_models.py` | ONNX export with verification against PyTorch |
 | `coverage_requirements.py` | Derive required frame rate from the mission |
 | `sensor_resolution_study.py` | Detection vs thermal sensor resolution |
+| `fov_study.py` | Sensor resolution and lens chosen together: recall against area searched per hour |
 | `operating_point.py` | Pick the confidence threshold from mission cost |
 | `operational_criterion.py` | Derive the IoU criterion from the geolocation error budget |
 

@@ -316,6 +316,62 @@ than optional, and the recall target revised accordingly.
 
 ---
 
+## 3d-ii. The Lens Is Part of the Same Decision
+
+The resolution study above held the field of view at 50 degrees. What the
+detector responds to is pixels on the person, which depends on resolution,
+lens and altitude together - and the other side of the trade is swath, which
+sets how much ground is searched per hour. `scripts/fov_study.py` maps each
+(sensor, lens) pair onto the measured recall curve and weighs it against
+coverage. At 100 m and 20 m/s, people found per hour relative to 640 x 512
+behind a 50 degree lens:
+
+| Sensor | 24 deg | 42 deg | 50 deg | 57 deg | 69 deg |
+|--------|-------:|-------:|-------:|-------:|-------:|
+| 160 x 120 | 0.43x (recall 0.884) | 0.63x | 0.67x (0.625) | - | - |
+| 256 x 192 | 0.45x | 0.77x | 0.91x (0.841) | 0.97x | 1.05x (0.663) |
+| 384 x 288 | 0.46x | 0.80x | 0.96x (0.890) | **1.10x (0.880)** | 1.34x (0.844) |
+| 640 x 512 | 0.46x | 0.82x | 1.00x (0.929) | **1.15x (0.917)** | 1.43x (0.900) |
+
+A dash means the scale falls below the smallest one measured, so no recall is
+claimed. Above native scale recall is reported as a floor, never a gain.
+
+### Field of view and altitude are the same lever
+
+Pixels on a target scale with 1 / (altitude x tan(FOV/2)) and swath with
+altitude x tan(FOV/2). So a 69 degree lens at 100 m sees exactly what a 50
+degree lens sees at 147 m - identical GSD, identical swath, verified. The lens
+does not add a new trade; it decides **at which altitude** a given GSD and
+coverage are reached.
+
+That makes it decisive, because altitude is capped - typically 120 m above
+ground for small UAVs. Under that ceiling a 50 degree lens can never sweep
+more than 112 m; a 69 degree lens reaches 165 m. **A wider lens buys swath
+that altitude legally cannot**, and it also lowers the frame-rate requirement,
+because the longer along-track footprint needs fewer frames per target - 0.55
+FPS for three-frame confirmation at 69 degrees against 0.80 at 50, which
+matters on a board that is already short.
+
+### What to buy
+
+- **A narrow lens is the wrong way to rescue a cheap sensor.** 160 x 120
+  behind 24 degrees recovers recall to 0.884 but sweeps 0.43x the ground.
+- **384 x 288 behind about 57 degrees** matches the reference for search
+  throughput (1.10x) at recall 0.88, and is the value choice.
+- **640 x 512 behind about 57 degrees** is the performance choice: 1.15x the
+  throughput at recall 0.917.
+- People found per hour treats a person missed in a searched area like one
+  in unsearched ground. In practice a searched area tends to be marked clear,
+  so a recall floor should bind before throughput - which is what rules out
+  69 degrees on 384 x 288 (0.844) despite its 1.34x.
+
+Two assumptions carry this: HIT-UAV's frames are treated as a 50 degree
+field of view, as every GSD figure in this project does, and recall comes
+from MT-005's curve rather than MT-011b's. Both should be revisited before a
+purchase is committed.
+
+---
+
 ## 3e. A Precedent Worth Weighing
 
 Lygouras et al. (2019), reference [4] in the literature survey, built a
