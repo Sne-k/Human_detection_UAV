@@ -222,6 +222,14 @@ full pipeline from 38.8 ms to 47.5 ms on the development CPU.
 | Detector alone | 38.8 ms | 117 - 194 ms | 5.2 - 8.6 | marginal | clears |
 | + tracking, geoloc, fusion | 40.9 ms | 123 - 205 ms | 4.9 - 8.1 | marginal | clears |
 | **Full pipeline** | **47.5 ms** | **143 - 238 ms** | **4.2 - 7.0** | marginal | **clears by 0.2** |
+| **Full pipeline, measured at 640 x 512** | **55.1 ms** | **165 - 276 ms** | **3.6 - 6.1** | **FAILS** | marginal |
+
+**Corrected again (training_log.md section 50):** the 47.5 ms row used an
+ego-motion cost of 6.6 ms, taken by subtracting two noisy end-to-end frame
+times on the 512 x 384 test sequence. Measured in isolation, ego-motion costs
+18.4 ms at the real 640 x 512 in its old configuration and 14.2 ms in the
+current one, which adds a forward-backward check. The tracking requirement at
+60 m now fails outright; detect-and-report still clears by a wide margin.
 
 **The specification to shop with is therefore about 7 FPS on the whole
 payload, not on the detector** - roughly 8.5 FPS of detector throughput to

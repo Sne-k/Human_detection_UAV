@@ -230,7 +230,8 @@ def run_sequence(image, source_truth, drift, frames, detector, confs, payload,
     background = not source_truth
 
     # Detector and ego-motion once per frame, shared by every configuration.
-    ego = realtime_detect.EgoMotionEstimator()
+    # The payload's own estimator configuration, not the class default.
+    ego = payload.make_ego_estimator()
     prepared = []
 
     for ox, oy in offsets(frames, drift):

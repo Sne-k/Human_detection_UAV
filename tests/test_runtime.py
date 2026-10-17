@@ -147,3 +147,68 @@ def test_default_model_is_the_deployed_one():
     source = inspect.getsource(payload.main)
     assert "args.model or DEFAULT_THERMAL" in source
     assert payload.DEFAULT_THERMAL in payload.MODEL_SHAPES
+
+
+# ------------------------------------------------------------ ego-motion
+
+def _textured(shift, size=(240, 320)):
+    rng = np.random.default_rng(3)
+    base = (rng.random((size[0], size[1] + 64)) * 255).astype(np.uint8)
+    import cv2
+    base = cv2.GaussianBlur(base, (5, 5), 0)
+    return base[:, 32 - shift:32 - shift + size[1]].copy()
+
+
+def test_flow_failure_is_predicted_not_zeroed():
+    """When flow cannot measure, the last trusted step is repeated. The old
+    fallback assumed the camera had stopped - wrong by the full ground
+    motion at flight speed."""
+
+    ego = payload.make_ego_estimator()    # the deployed configuration
+    for k in range(3):
+        ego.update(_textured(4 * k))
+    assert ego.status == "ok"
+    assert ego.last_step[0, 2] == pytest.approx(4.0, abs=0.3)
+
+    # Crossing onto a featureless frame and staying there - land to water.
+    # Prediction alone would repeat the wrong step forward-only flow reports
+    # at the boundary; with the forward-backward check every step is right.
+    blank = np.full((240, 320), 128, np.uint8)
+    for _ in range(3):
+        ego.update(blank)
+        assert ego.status == "predicted"
+        assert ego.last_step[0, 2] == pytest.approx(4.0, abs=0.3)
+
+
+def test_forward_backward_catches_a_step_into_a_blank_frame():
+    """Forward-only flow 'tracks' points into a flat frame and reports a
+    confident wrong step; the forward-backward check rejects it. It is off by
+    default because it costs about 50% more and, measured on featureless
+    sequences, barely reduces confident errors (evaluate_ego_health.py)."""
+
+    import realtime_detect
+
+    blank = np.full((240, 320), 128, np.uint8)
+
+    plain = realtime_detect.EgoMotionEstimator(min_inliers=1, fallback="predict")
+    checked = realtime_detect.EgoMotionEstimator(min_inliers=1, fallback="predict",
+                                                 forward_backward=True)
+    for ego in (plain, checked):
+        for k in range(3):
+            ego.update(_textured(4 * k))
+        ego.update(blank)
+
+    assert checked.status == "predicted"
+    assert checked.last_step[0, 2] == pytest.approx(4.0, abs=0.3)
+    # Without the check the same step is accepted, and wrong.
+    assert plain.status == "ok"
+    assert abs(plain.last_step[0, 2] - 4.0) > 3.0
+
+
+def test_flow_failure_with_nothing_to_predict_is_lost():
+    import realtime_detect
+
+    ego = realtime_detect.EgoMotionEstimator(min_inliers=1, fallback="predict")
+    ego.update(np.full((240, 320), 128, np.uint8))
+    ego.update(np.full((240, 320), 128, np.uint8))
+    assert ego.status == "lost" and not ego.healthy

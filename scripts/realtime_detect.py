@@ -109,6 +109,10 @@ COLOR_TEXT = (255, 255, 255)
 # Ego-motion
 # ---------------------------------------------------------------------
 
+# Forward-backward consistency: a point must return within this many pixels.
+FB_MAX_PX = 1.0
+
+
 class EgoMotionEstimator:
     """
     Estimates frame-to-frame camera motion and accumulates it.
@@ -140,61 +144,143 @@ class EgoMotionEstimator:
         ),
     }
 
-    def __init__(self):
+    def __init__(self, min_inliers=0, fallback="identity", max_predict=5,
+                 forward_backward=False, scale=1.0, max_corners=None):
+        """
+        min_inliers  RANSAC inliers a step needs to be trusted. 0 accepts any
+                     model RANSAC returns, which was the original behaviour.
+        fallback     what to use when a step is not trusted. "identity"
+                     assumes the camera did not move - the original
+                     behaviour, and wrong by the full ground motion at
+                     flight speed. "predict" repeats the last trusted step,
+                     since an aircraft's motion is smooth over a few frames.
+        max_predict  consecutive untrusted steps to predict across before
+                     declaring the estimate lost.
+        """
+
         self.previous_gray = None
         self.cumulative = np.eye(3, dtype=np.float64)
         self.failures = 0
 
+        self.min_inliers = min_inliers
+        self.forward_backward = forward_backward
+        # Estimate on a resized frame and map the step back. Flow cost scales
+        # with pixels; the step is a global motion, not a fine detail.
+        self.scale = scale
+
+        if max_corners is not None:
+            self.FEATURE_PARAMS = dict(self.FEATURE_PARAMS, maxCorners=max_corners)
+        self.fallback = fallback
+        self.max_predict = max_predict
+
+        self.last_inliers = 0
+        self.last_step = np.eye(3, dtype=np.float64)
+        self.last_good_step = None
+        self.consecutive_bad = 0
+
+        # ok: measured. predicted: carried over from the last trusted step.
+        # lost: no trustworthy estimate - movement states must be withheld.
+        self.status = "init"
+
+    @property
+    def healthy(self):
+        return self.status != "lost"
+
+    def _measure(self, previous, current):
+        """One frame-to-frame step: (2x3 affine or None, RANSAC inliers)."""
+
+        previous_points = cv2.goodFeaturesToTrack(
+            previous, mask=None, **self.FEATURE_PARAMS
+        )
+
+        if previous_points is None or len(previous_points) < 6:
+            return None, 0
+
+        current_points, status, _ = cv2.calcOpticalFlowPyrLK(
+            previous, current, previous_points, None, **self.LK_PARAMS
+        )
+
+        if current_points is None:
+            return None, 0
+
+        status = status.reshape(-1).astype(bool)
+
+        if self.forward_backward:
+            # Track each point back again and keep only those that return to
+            # where they started. A point "tracked" into a flat region - a
+            # frame of open water, fog or snow - cannot find its way back, but
+            # forward-only tracking returns a plausible displacement for it,
+            # and RANSAC then agrees with itself. Measured: without this check
+            # a step from a textured frame into a blank one reported "ok".
+            back, back_status, _ = cv2.calcOpticalFlowPyrLK(
+                current, previous, current_points, None, **self.LK_PARAMS
+            )
+
+            if back is None:
+                return None, 0
+
+            error = np.linalg.norm(
+                back.reshape(-1, 2) - previous_points.reshape(-1, 2), axis=1
+            )
+            status &= back_status.reshape(-1).astype(bool) & (error < FB_MAX_PX)
+
+        source = previous_points.reshape(-1, 2)[status]
+        target = current_points.reshape(-1, 2)[status]
+
+        if len(source) < 6:
+            return None, 0
+
+        affine, inliers = cv2.estimateAffinePartial2D(
+            source, target, method=cv2.RANSAC, ransacReprojThreshold=3.0
+        )
+
+        if affine is None:
+            return None, 0
+
+        return affine, int(inliers.sum()) if inliers is not None else 0
+
     def update(self, gray):
         """Feed the next grayscale frame. Returns the 3x3 cumulative matrix."""
+
+        if self.scale != 1.0:
+            gray = cv2.resize(gray, None, fx=self.scale, fy=self.scale,
+                              interpolation=cv2.INTER_AREA)
 
         if self.previous_gray is None:
             self.previous_gray = gray
             return self.cumulative
 
-        previous_points = cv2.goodFeaturesToTrack(
-            self.previous_gray,
-            mask=None,
-            **self.FEATURE_PARAMS,
-        )
+        affine, inliers = self._measure(self.previous_gray, gray)
+        self.last_inliers = inliers
 
         step = np.eye(3, dtype=np.float64)
 
-        if previous_points is not None and len(previous_points) >= 6:
+        if affine is not None and inliers >= max(self.min_inliers, 1):
+            step[:2, :] = affine
 
-            current_points, status, _ = cv2.calcOpticalFlowPyrLK(
-                self.previous_gray,
-                gray,
-                previous_points,
-                None,
-                **self.LK_PARAMS,
-            )
-
-            if current_points is not None:
-                status = status.reshape(-1).astype(bool)
-
-                source = previous_points.reshape(-1, 2)[status]
-                target = current_points.reshape(-1, 2)[status]
-
-                if len(source) >= 6:
-                    affine, inliers = cv2.estimateAffinePartial2D(
-                        source,
-                        target,
-                        method=cv2.RANSAC,
-                        ransacReprojThreshold=3.0,
-                    )
-
-                    if affine is not None:
-                        step[:2, :] = affine
-                    else:
-                        self.failures += 1
-                else:
-                    self.failures += 1
-            else:
-                self.failures += 1
+            if self.scale != 1.0:
+                # A step measured on the resized frame, expressed in full
+                # resolution: S^-1 A S, with S the resize.
+                s = np.diag([self.scale, self.scale, 1.0])
+                step = np.linalg.inv(s) @ step @ s
+            self.last_good_step = step.copy()
+            self.consecutive_bad = 0
+            self.status = "ok"
         else:
             self.failures += 1
+            self.consecutive_bad += 1
 
+            if (
+                self.fallback == "predict"
+                and self.last_good_step is not None
+                and self.consecutive_bad <= self.max_predict
+            ):
+                step = self.last_good_step.copy()
+                self.status = "predicted"
+            else:
+                self.status = "lost"
+
+        self.last_step = step
         self.cumulative = step @ self.cumulative
         self.previous_gray = gray
 
@@ -289,6 +375,10 @@ class MovementTracker:
 # Frame sources
 # ---------------------------------------------------------------------
 
+# How long a live camera may be gone before the run gives up.
+RECONNECT_S = 30.0
+
+
 def open_source(source):
     """
     Return (iterator over BGR frames, fps, (width, height), total_frames).
@@ -343,15 +433,65 @@ def open_source(source):
     reported_total = capture.get(cv2.CAP_PROP_FRAME_COUNT)
     total = int(reported_total) if reported_total and reported_total > 0 else 0
 
+    live = source.isdigit()
+
+    # When the camera last delivered a frame, or None while it is delivering.
+    # The reconnect budget is measured from here - from the last frame
+    # actually *read*, not the last successful open. A device that opens but
+    # never delivers, which a wedged USB camera does, would otherwise reset
+    # the budget on every attempt and be retried forever.
+    down_since = None
+
+    def reopen():
+        """
+        A live camera that stops delivering is a fault, not the end of the
+        mission - a loose connector or a USB reset should cost seconds, not
+        the rest of the flight. Retry until RECONNECT_S has passed without a
+        frame.
+        """
+
+        nonlocal capture
+
+        attempt = 0
+
+        while time.monotonic() - down_since < RECONNECT_S:
+            attempt += 1
+            capture.release()
+            time.sleep(min(0.5 * attempt, 3.0))
+
+            capture = cv2.VideoCapture(int(source))
+
+            if capture.isOpened():
+                return True
+
+        print(f"camera {source}: no frame for {RECONNECT_S:.0f} s, stopping")
+        return False
+
     def frames():
+        nonlocal down_since
+
         try:
             while True:
                 ok, frame = capture.read()
 
-                if not ok:
+                if ok:
+                    if down_since is not None:
+                        print(f"camera {source}: recovered after "
+                              f"{time.monotonic() - down_since:.1f} s")
+                    down_since = None
+                    yield frame
+                    continue
+
+                # End of a file is normal. A camera that stops is not.
+                if not live:
                     break
 
-                yield frame
+                if down_since is None:
+                    down_since = time.monotonic()
+                    print(f"camera {source}: read failed, reconnecting")
+
+                if not reopen():
+                    break
         finally:
             capture.release()
 

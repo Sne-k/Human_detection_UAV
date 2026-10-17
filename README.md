@@ -204,10 +204,24 @@ did until the fix in [`docs/training_log.md`](docs/training_log.md)
 section 49 - emits almost nothing in flight. Every record comes from a track,
 so this is the difference between a working payload and a silent one.
 
-Run it:
+Run it on a recording, or live with MAVLink from the flight controller:
 
 ```bash
-python scripts/payload.py --source flight.mp4 --model MT-011b --telemetry state.jsonl --jsonl detections.jsonl
+python scripts/payload.py --source flight.mp4 --telemetry state.jsonl --jsonl detections.jsonl
+```
+
+```bash
+python scripts/payload.py --source 0 --mavlink udpin:0.0.0.0:14550 --jsonl detections.jsonl
+```
+
+Check the output against the interface contract, and run the tests:
+
+```bash
+python scripts/validate_jsonl.py detections.jsonl
+```
+
+```bash
+python -m pytest tests
 ```
 
 ---
@@ -307,9 +321,15 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `realtime_detect.py` | Single-model pipeline; `payload.py` reuses its components |
 | `ensemble_detect.py` | Ensemble inference with per-stage timing |
 | `single_model_wbf.py` | Fusion vs suppression on one model, the free precision gain |
-| `geolocate.py` | Pixel detections to ground coordinates |
+| `geolocate.py` | Pixel detections to ground coordinates, uncertainty propagated through the real geometry |
+| `telemetry.py` | Aircraft state over MAVLink, matched to frames by capture time |
+| `mavlink_sim.py` | Transmits a known flight as real MAVLink, for testing without a flight controller |
+| `validate_jsonl.py` | Checks a detection stream against the ICD contract; non-zero exit on violation |
 | `webcam_trial.py` | Live-camera trial, explicit about what it can and cannot validate |
 | `verify_deployed_config.py` | Runs the payload's detection stage and checks it reproduces the parts - stops before tracking |
+| `evaluate_telemetry_sync.py` | Attitude error from telemetry timing, over real MAVLink |
+| `geolocation_sensitivity.py` | Frame conventions and the ICD geolocation acceptance test, simulated |
+| `evaluate_ego_health.py` | Camera-motion failure modes and fallback policies |
 | `evaluate_tracking_gate.py` | Scores what the payload actually emits, through tracking, on drifting sequences with exact truth |
 
 ### Dataset preparation

@@ -23,7 +23,9 @@ import sys
 
 STATES = {"moving", "stationary", "edge", "unknown"}
 
-FRAME_FIELDS = {"frame", "timestamp_s", "persons", "detections", "uav"}
+FRAME_FIELDS = {"frame", "timestamp_s", "persons", "detections", "uav",
+                "ego_motion"}
+EGO_STATES = {"init", "ok", "predicted", "lost"}
 DETECTION_FIELDS = {"track_id", "box", "confidence", "state",
                     "displacement_px", "ground"}
 UAV_FIELDS = {"lat", "lon", "altitude_m", "state_age_s"}
@@ -77,6 +79,9 @@ def validate_record(record, previous=None):
                 and timestamp < previous["timestamp_s"]:
             err(f"timestamp_s {timestamp} goes backwards from "
                 f"{previous['timestamp_s']}")
+
+    if "ego_motion" in record and record["ego_motion"] not in EGO_STATES:
+        err(f"ego_motion {record['ego_motion']!r} is not one of {sorted(EGO_STATES)}")
 
     detections = record.get("detections")
 

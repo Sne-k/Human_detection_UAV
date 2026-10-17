@@ -3608,3 +3608,137 @@ Section 46 assembled the payload specifically to close this gap and claimed to
 have done so. It had closed it up to the tracker, and the tracker was where the
 gap was. The evaluator added here runs the payload's own `track_frame`, so the
 measured path and the shipped path are now the same function.
+
+---
+
+## 50. Pre-Hardware Integration: Telemetry, Geolocation, Motion, Faults
+
+The task list's correctness and validation items, worked through. Each was
+measured, and three of them overturned an assumption.
+
+### A1 + A2. MAVLink, and matching telemetry to frames by time
+
+Telemetry was looked up by frame index, which worked only because the test
+sequence was generated with one record per frame. A flight controller sends
+ATTITUDE and GLOBAL_POSITION_INT separately, at their own rates, on its own
+boot clock. `telemetry.py` reads them over pymavlink, aligns the clock with a
+windowed minimum of arrival minus boot time, keeps position and attitude as
+separate series, and interpolates each to a frame's capture time - refusing
+across a dropout or a stalled link, so stale state yields `"uav": null` and no
+coordinate rather than a confident wrong one.
+
+`mavlink_sim.py` transmits a known banked turn as real MAVLink over UDP with
+2-40 ms of random link delay. Against exact truth, in the turn:
+
+| Method | Worst attitude error | Ground error at 100 m |
+|--------|---------------------:|----------------------:|
+| Latest received message | 3.41 deg | 6.0 m |
+| **Matched by capture time** | **0.07 deg** | **0.12 m** |
+
+Two things the measurement caught on the way. On Windows `time.monotonic`
+ticks at about 15.6 ms, which put the clock-offset estimate 6 ms *early* - a
+minimum over delays can only ever be late - so frames and telemetry now share
+`perf_counter`. And the first evaluation queried after all telemetry had
+arrived; live, at capture time the next sample has not arrived, so the payload
+was holding the previous one. A delay line now holds each frame's records
+until telemetry newer than its capture time exists. Live state age fell from a
+mean of 126 ms to 51 ms, with every frame interpolated.
+
+### B1. The geolocation acceptance test, in simulation
+
+The ICD's one quantitative criterion: median ground error within the reported
+`position_error_m`, with no systematic bias. Simulated by perturbing every
+input by the uncertainties `estimate_error` claimed to cover:
+
+| Altitude | Position | Reported (old) | Median error | ICD |
+|---------:|----------|---------------:|-------------:|-----|
+| 100 m | corner | 3.94 m | 3.96 m | **FAIL** |
+| 130 m | centre | 3.92 m | 4.07 m | **FAIL** |
+| 130 m | corner | 4.28 m | 4.52 m | **FAIL** |
+
+It modelled attitude as one 1-degree term scaled by slant range; roll, pitch
+and yaw are three independent errors, and off nadir a tilt moves the ground
+point by about slant^2 / altitude per radian. `propagate_error` now moves each
+input by its sigma through the real projection, linearised at the actual
+attitude, and reports the RMS radial error - which always bounds a 2D
+Gaussian's median. It passes at all nine points with an 18-20% margin and no
+bias above 0.11 m. At 100 m nadir the reported uncertainty becomes 4.3 m, and
+section 32's argument strengthens: 4.1x the box error IoU 0.25 accepts.
+
+Seven frame-convention checks pass. Two first failed because my expectations
+were wrong: rolling right swings the belly *out* to the left, so a nadir
+camera looks west heading north; nose-up points the belly forward.
+
+### A3. When the motion estimate fails
+
+Tracking runs in the stabilised frame (section 49), so every record now
+depends on optical flow. Measured against known 20 px/frame drift:
+
+- **Featureless ground** (people kept, background flat) fails *detectably*:
+  bad steps have zero inliers, and the old fallback then assumed the camera
+  had stopped - wrong by the full ground motion.
+- **Fog** fails *confidently*: corners are mostly sensor noise, which averages
+  away at the coarse pyramid levels, so flow reports near-zero motion from
+  hundreds of agreeing points. The synthetic fog also destroyed the detector,
+  so its tracking result was uninformative.
+- **Crossing from land onto water** is the case that mattered and the first
+  measurement missed, because its featureless sequences were blank from
+  frame 1. At the boundary, forward-only flow "tracks" points into the flat
+  frame and reports a confident wrong step; prediction then repeats it.
+
+| Policy, land to water | Steps wrong | Stabilisation error 11 frames later |
+|-----------------------|------------:|------------------------------------:|
+| identity (old) | 32% | 182 px |
+| predict | 32% | 182 px |
+| **predict + forward-backward** | **3%** | **0 px** |
+
+The forward-backward check - track each point back and keep only those that
+return - is therefore on, and 80 corners instead of 300 pays for it: 14.2 ms
+per frame against 18.4 ms for the old configuration without it. Movement state
+is now withheld until the estimate has been measured, not predicted, for a
+full history window, and each record carries `ego_motion`.
+
+**Not solved:** ground featureless from the first frame, where about 3% of
+steps are confidently wrong in ways no vision-only check tried catches. That
+needs an independent motion reference - telemetry, now available since A1.
+Task A5.
+
+### The pipeline cost was understated
+
+Section 39 put ego-motion at 6.6 ms, from subtracting two noisy end-to-end
+frame times on the 512 x 384 test sequence. Measured in isolation it is
+13.2 ms at 512 x 384 and **18.4 ms at the real 640 x 512** - so every frame
+rate derived from section 39 was optimistic. With the new configuration:
+
+| | Dev CPU | Pi 5 estimate | Pi 5 FPS |
+|---|--------:|---------------|----------|
+| Section 39 (as documented) | 47.5 ms | 143 - 238 ms | 4.2 - 7.0 |
+| **Measured, 640 x 512** | **55.1 ms** | **165 - 276 ms** | **3.6 - 6.1** |
+
+The tracking requirement at 60 m, 6.7 FPS, now fails outright, and 100 m is
+marginal. Detect-and-report at 1.34 FPS still clears with large margin - which
+strengthens the case for search mode (A4).
+
+### B2. Failure injection
+
+Every one of these used to end the run. Now each costs only what it must:
+
+| Fault | Behaviour |
+|-------|-----------|
+| Corrupt frame - None, empty, greyscale, wrong size | Skipped and counted |
+| Exception anywhere in per-frame work | That frame skipped, run continues |
+| Disk full while writing the stream | Stream stops, detection continues (ICD IF-5) |
+| Telemetry stops | `"uav": null`, no fabricated coordinates |
+| Camera drops out | Reconnects for up to 30 s without a frame |
+| Camera opens but never delivers | Gives up after 30 s - not forever |
+
+The last row is a bug the test found in my first version: the reconnect budget
+reset on every successful *open*, so a wedged camera would be retried forever.
+It now runs from the last frame actually *read*.
+
+### B5 + B7. The contract, and tests
+
+`validate_jsonl.py` checks every record against the ICD and exits non-zero on
+a violation. `tests/` holds 56 tests, each pinning a property a past bug
+violated; the 49 that need no artefacts run in about 12 s with no dataset,
+weights or GPU.

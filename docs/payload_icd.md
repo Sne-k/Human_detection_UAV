@@ -209,7 +209,8 @@ delimited, produced by `scripts/realtime_detect.py` and enriched by
 | `frame`            | int     | Monotonic frame counter                    |
 | `timestamp_s`      | float   | Seconds since stream start                 |
 | `persons`          | int     | Detections in this frame                   |
-| `uav`              | object  | Aircraft state used for this frame's fixes |
+| `uav`              | object/null | Aircraft state used for this frame's fixes; `null` when telemetry is configured but stale or missing, and then no fix is reported |
+| `ego_motion`       | enum    | `ok`, `predicted`, `lost`, `init` - health of the camera-motion estimate. Tracking runs in the stabilised frame, so anything but `ok` means identity and movement are degraded |
 | `track_id`         | int     | Persistent identity; -1 if unassociated    |
 | `box`              | float[4]| Pixel box, x1 y1 x2 y2                     |
 | `confidence`       | float   | Detector confidence                        |
@@ -227,7 +228,8 @@ display it.
 ### `state` semantics
 
 `edge` and `unknown` mean the movement state is **withheld**, not that the
-person is stationary. A person is reported regardless of movement state. See
+person is stationary. Movement is also withheld until the camera-motion
+estimate has been `ok` for a full history window. A person is reported regardless of movement state. See
 `realtime_pipeline.md` section 2.
 
 ### Bandwidth

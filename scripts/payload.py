@@ -550,9 +550,55 @@ def track_frame(tracker, boxes, scores, frame, cumulative=None):
     return rows, world
 
 
+# Camera-motion estimation, measured in evaluate_ego_health.py and
+# training_log.md section 50. One definition, used by the payload and by
+# every evaluation of it, so what is measured is what ships.
+#
+#   predict          repeat the last trusted step across a flow failure,
+#                    instead of assuming the camera stopped - which is wrong
+#                    by the full ground motion at flight speed
+#   forward_backward reject points that do not track back to where they
+#                    started. Crossing from land onto water, forward-only
+#                    flow reports a confident wrong step and the error
+#                    reached 170 px within five frames; with the check, 0 px
+#   max_corners 80   RANSAC needs a handful; 300 cost time and bought nothing.
+#                    With the check, 14.2 ms per 640 x 512 frame against
+#                    18.4 ms for the old configuration without it
+#
+# None of this rescues ground that is featureless from the first frame, and
+# about 3% of steps there are confidently wrong in ways no vision-only check
+# tried catches. That needs an independent motion reference from telemetry:
+# task A5.
+EGO_SETTINGS = dict(
+    min_inliers=1,
+    fallback="predict",
+    max_predict=30,
+    forward_backward=True,
+    max_corners=80,
+)
+
+
+def make_ego_estimator():
+    from realtime_detect import EgoMotionEstimator
+
+    return EgoMotionEstimator(**EGO_SETTINGS)
+
+
 # ByteTrack's low-score band. Boxes between this and the operating point can
 # continue an existing track but never start one.
 TRACK_LOW_THRESH = 0.1
+
+
+def usable_frame(frame, height, width):
+    """A three-channel frame of the stream's size, or not worth processing."""
+
+    return (
+        isinstance(frame, np.ndarray)
+        and frame.ndim == 3
+        and frame.shape[2] == 3
+        and frame.shape[0] == height
+        and frame.shape[1] == width
+    )
 
 
 def build_tracker(frame_rate, conf=CONF):
@@ -738,7 +784,13 @@ def main():
         print("         (about 20 px/frame); expect almost no output from a")
         print("         moving aircraft. Fine for a static camera or webcam.")
 
-    ego = None if args.no_ego_motion else EgoMotionEstimator()
+    ego = None if args.no_ego_motion else make_ego_estimator()
+
+    # Movement state is withheld until the motion estimate has been measured,
+    # not predicted or lost, for a whole history window: a window containing
+    # a bad step cannot support a confident moving/stationary label.
+    clean_steps = 0
+    ego_status_counts = {"ok": 0, "predicted": 0, "lost": 0}
 
     movement = MovementTracker(
         history_frames=args.history,
@@ -785,6 +837,9 @@ def main():
         print("geoloc:  disabled (no --telemetry or --mavlink)")
 
     geoloc_refused = 0
+    bad_frames = 0
+    frame_errors = 0
+    stream_failed = None
     stream_start = telemetry_mod.CLOCK()
 
     # Geolocation delay line. Live, a frame's capture time is newer than any
@@ -828,8 +883,25 @@ def main():
                     if fix is not None:
                         located += 1
 
+        nonlocal stream, stream_failed
+
         if stream is not None:
-            stream.write(json.dumps(out) + "\n")
+            try:
+                stream.write(json.dumps(out) + "\n")
+                stream.flush()
+            except OSError as exc:
+                # A full or failed disk must not stop detection (ICD IF-5).
+                # Stop writing, say so once, keep going.
+                stream_failed = f"{type(exc).__name__}: {exc}"
+                print(f"WARNING: detection stream write failed ({stream_failed});"
+                      " detection continues without it")
+
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+                stream = None
 
     def flush(final=False):
         while pending:
@@ -906,109 +978,139 @@ def main():
             pass
 
     for frame in frames:
-        frame_start = time.perf_counter()
+        # A single bad frame, or a single exception anywhere in the
+        # per-frame work, must cost that frame - not the rest of the
+        # mission. Each is counted and the run continues.
+        if not usable_frame(frame, height, width):
+            bad_frames += 1
+            frame_index += 1
 
-        # Capture time: the shared local clock for a live stream with live
-        # telemetry, stream time otherwise.
-        frame_time = (
-            telemetry_mod.CLOCK() if live_clock else frame_index / fps
-        )
+            if (args.max_frames and frame_index >= args.max_frames) or stop["requested"]:
+                break
 
-        cumulative = (
-            ego.update(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-            if ego is not None
-            else None
-        )
-
-        detect_start = time.perf_counter()
-
-        boxes, scores, votes = detector(frame)
-
-        detect_times.append(time.perf_counter() - detect_start)
-
-        # Tracks are formed in the stabilised frame; see track_frame().
-        tracks, world_boxes = track_frame(
-            tracker, boxes, scores, frame, cumulative
-        )
+            continue
 
         records = []
 
-        for row, world_box in zip(tracks, world_boxes):
-            x1, y1, x2, y2 = row[:4]
-            track_id = int(row[4])
-            score = float(row[5])
+        try:
+            frame_start = time.perf_counter()
 
-            world = (
-                (world_box[0] + world_box[2]) / 2.0,
-                (world_box[1] + world_box[3]) / 2.0,
+            # Capture time: the shared local clock for a live stream with live
+            # telemetry, stream time otherwise.
+            frame_time = (
+                telemetry_mod.CLOCK() if live_clock else frame_index / fps
             )
 
-            at_border = (
-                x1 <= args.border_margin
-                or y1 <= args.border_margin
-                or x2 >= width - args.border_margin
-                or y2 >= height - args.border_margin
+            cumulative = (
+                ego.update(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+                if ego is not None
+                else None
             )
 
-            movement.update(track_id, world, frame_index, at_border)
-            state, displacement = movement.state(track_id)
+            if ego is not None and ego.status in ego_status_counts:
+                ego_status_counts[ego.status] += 1
+                clean_steps = clean_steps + 1 if ego.status == "ok" else 0
 
-            seen_tracks.add(track_id)
+            detect_start = time.perf_counter()
 
-            if state == "moving":
-                moving_tracks.add(track_id)
+            boxes, scores, votes = detector(frame)
 
-            record = {
-                "track_id": track_id,
-                "box": [round(float(v), 1) for v in (x1, y1, x2, y2)],
-                "confidence": round(score, 4),
-                "state": state,
-                "displacement_px": round(float(displacement), 2),
-            }
+            detect_times.append(time.perf_counter() - detect_start)
 
-            records.append(record)
-
-        movement.prune(frame_index)
-
-        frame_times.append(time.perf_counter() - frame_start)
-
-        instant_fps = (
-            1.0 / frame_times[-1] if frame_times[-1] > 0 else 0.0
-        )
-
-        pending.append((frame_time, {
-            "frame": frame_index,
-            "timestamp_s": round(
-                frame_time - stream_start if live_clock else frame_time, 3
-            ),
-            "persons": len(records),
-            "detections": records,
-        }))
-
-        flush()
-
-        if writer is not None or args.show:
-            annotated = annotate(
-                frame.copy(), records,
-                {
-                    "frame": frame_index,
-                    "persons": len(records),
-                    "moving": sum(
-                        1 for r in records if r["state"] == "moving"
-                    ),
-                    "fps": instant_fps,
-                    "conf": args.conf,
-                },
+            # Tracks are formed in the stabilised frame; see track_frame().
+            tracks, world_boxes = track_frame(
+                tracker, boxes, scores, frame, cumulative
             )
 
-            if writer is not None:
-                writer.write(annotated)
+            records = []
 
-            if args.show:
-                cv2.imshow("payload", annotated)
+            for row, world_box in zip(tracks, world_boxes):
+                x1, y1, x2, y2 = row[:4]
+                track_id = int(row[4])
+                score = float(row[5])
 
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+                world = (
+                    (world_box[0] + world_box[2]) / 2.0,
+                    (world_box[1] + world_box[3]) / 2.0,
+                )
+
+                at_border = (
+                    x1 <= args.border_margin
+                    or y1 <= args.border_margin
+                    or x2 >= width - args.border_margin
+                    or y2 >= height - args.border_margin
+                )
+
+                movement.update(track_id, world, frame_index, at_border)
+                state, displacement = movement.state(track_id)
+
+                if ego is not None and clean_steps < args.history:
+                    state = "unknown"
+
+                seen_tracks.add(track_id)
+
+                if state == "moving":
+                    moving_tracks.add(track_id)
+
+                record = {
+                    "track_id": track_id,
+                    "box": [round(float(v), 1) for v in (x1, y1, x2, y2)],
+                    "confidence": round(score, 4),
+                    "state": state,
+                    "displacement_px": round(float(displacement), 2),
+                }
+
+                records.append(record)
+
+            movement.prune(frame_index)
+
+            frame_times.append(time.perf_counter() - frame_start)
+
+            instant_fps = (
+                1.0 / frame_times[-1] if frame_times[-1] > 0 else 0.0
+            )
+
+            pending.append((frame_time, {
+                "frame": frame_index,
+                "timestamp_s": round(
+                    frame_time - stream_start if live_clock else frame_time, 3
+                ),
+                "persons": len(records),
+                "detections": records,
+                **({"ego_motion": ego.status} if ego is not None else {}),
+            }))
+
+            flush()
+
+            if writer is not None or args.show:
+                annotated = annotate(
+                    frame.copy(), records,
+                    {
+                        "frame": frame_index,
+                        "persons": len(records),
+                        "moving": sum(
+                            1 for r in records if r["state"] == "moving"
+                        ),
+                        "fps": instant_fps,
+                        "conf": args.conf,
+                    },
+                )
+
+                if writer is not None:
+                    writer.write(annotated)
+
+                if args.show:
+                    cv2.imshow("payload", annotated)
+
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+
+        except Exception as exc:  # noqa: BLE001 - the payload must outlive it
+            frame_errors += 1
+
+            if frame_errors <= 5:
+                print(f"frame {frame_index}: {type(exc).__name__}: {exc} "
+                      f"- skipped, run continues")
 
         if args.progress and frame_index % args.progress == 0:
             print(f"frame {frame_index:6d}  persons {len(records):3d}  "
@@ -1037,7 +1139,10 @@ def main():
         writer.release()
 
     if stream is not None:
-        stream.close()
+        try:
+            stream.close()
+        except OSError:
+            pass
 
     if receiver is not None:
         receiver.stop()
@@ -1064,8 +1169,12 @@ def main():
         "tracks_classified_moving": len(moving_tracks),
         "detections_geolocated": located,
         "frames_without_valid_state": geoloc_refused,
+        "bad_frames_skipped": bad_frames,
+        "frame_errors": frame_errors,
+        "stream_failed": stream_failed,
         "ego_motion": ego is not None,
         "ego_motion_failures": ego.failures if ego is not None else None,
+        "ego_motion_status": ego_status_counts if ego is not None else None,
     }
 
     print()
