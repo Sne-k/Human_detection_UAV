@@ -212,3 +212,30 @@ def test_flow_failure_with_nothing_to_predict_is_lost():
     ego.update(np.full((240, 320), 128, np.uint8))
     ego.update(np.full((240, 320), 128, np.uint8))
     assert ego.status == "lost" and not ego.healthy
+
+
+# ---------------------------------------------------------- frame logging
+
+def test_frame_logger_saves_only_frames_worth_labelling(tmp_path):
+    logger = payload.FrameLogger(tmp_path, conf=0.25, min_interval_s=1.0)
+    frame = np.zeros((64, 80, 3), np.uint8)
+    box = np.array([[10.0, 10, 22, 29]])
+
+    logger.consider(frame, 0, 0.0, box, np.array([0.95]), False)   # confident
+    logger.consider(frame, 1, 0.1, box, np.array([0.30]), False)   # uncertain
+    logger.consider(frame, 2, 0.5, box, np.array([0.30]), False)   # too soon
+    logger.consider(frame, 3, 1.5, box, np.array([0.95]), True)    # unconfirmed
+    logger.close()
+
+    assert logger.reasons == {"uncertain": 1, "unconfirmed": 1}
+    assert sorted(p.name for p in tmp_path.glob("*.png")) == ["0000001.png", "0000003.png"]
+    label = (tmp_path / "0000001.txt").read_text().split()
+    assert label[0] == "0" and float(label[1]) == pytest.approx(16 / 80)
+
+
+def test_frame_logger_failure_does_not_raise(tmp_path, monkeypatch):
+    logger = payload.FrameLogger(tmp_path, conf=0.25)
+    monkeypatch.setattr(payload.cv2, "imwrite", lambda *a: False)
+    logger.consider(np.zeros((8, 8, 3), np.uint8), 0, 0.0,
+                    np.array([[1.0, 1, 4, 6]]), np.array([0.3]), False)
+    assert logger.failed and logger.saved == 0

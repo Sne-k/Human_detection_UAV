@@ -90,6 +90,10 @@ DEFAULT_THERMAL = "MT-011b"
 DEFAULT_RGB = "MT-004"
 
 CONF = 0.25
+
+# Whether detections the tracker has not confirmed are reported (ICD: with
+# track_id -1). Set from the measurement in training_log.md section 51.
+UNASSOCIATED_DEFAULT = "drop"
 NMS_IOU = 0.70
 FUSE_IOU = 0.55
 
@@ -584,6 +588,108 @@ def make_ego_estimator():
     return EgoMotionEstimator(**EGO_SETTINGS)
 
 
+class FrameLogger:
+    """
+    Save the frames worth labelling - task D3.
+
+    The detector was trained on someone else's data. The way to fix that is
+    offline: fly, collect, label on the ground, fine-tune, validate, deploy a
+    new frozen model - the two-stage recipe MT-011 showed works. This collects.
+
+    Saving everything would fill the card with easy frames that teach the
+    model nothing. A frame is saved when it is one the model was unsure
+    about:
+
+      uncertain    a detection scored within UNCERTAIN_MARGIN of the operating
+                   point - where the decision is closest to going either way
+      unconfirmed  a detection the tracker did not confirm - a target seen
+                   once, or a track that broke
+
+    Each saved frame gets a YOLO-format pre-label file of the model's own
+    boxes, so labelling is correcting rather than drawing. Saving is rate
+    limited and capped, and a write failure turns logging off without
+    touching detection.
+    """
+
+    UNCERTAIN_MARGIN = 0.15
+
+    def __init__(self, directory, conf, min_interval_s=1.0, max_frames=5000):
+        self.directory = Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.conf = conf
+        self.min_interval_s = min_interval_s
+        self.max_frames = max_frames
+        self.saved = 0
+        self.last_saved_at = None
+        self.failed = None
+        self.reasons = {"uncertain": 0, "unconfirmed": 0}
+        self.index = (self.directory / "index.jsonl").open("a", encoding="utf-8")
+
+    def consider(self, frame, frame_index, frame_time, boxes, scores, unconfirmed):
+        if self.failed or self.saved >= self.max_frames or not len(boxes):
+            return
+
+        if (self.last_saved_at is not None
+                and frame_time - self.last_saved_at < self.min_interval_s):
+            return
+
+        uncertain = bool(((scores >= self.conf)
+                          & (scores < self.conf + self.UNCERTAIN_MARGIN)).any())
+
+        if not (uncertain or unconfirmed):
+            return
+
+        reason = "uncertain" if uncertain else "unconfirmed"
+        stem = f"{frame_index:07d}"
+        height, width = frame.shape[:2]
+
+        try:
+            if not cv2.imwrite(str(self.directory / f"{stem}.png"), frame):
+                raise OSError("image write returned false")
+
+            lines = [
+                f"0 {(x1 + x2) / 2 / width:.6f} {(y1 + y2) / 2 / height:.6f} "
+                f"{(x2 - x1) / width:.6f} {(y2 - y1) / height:.6f}"
+                for x1, y1, x2, y2 in boxes
+            ]
+            (self.directory / f"{stem}.txt").write_text("\n".join(lines), encoding="utf-8")
+
+            self.index.write(json.dumps({
+                "frame": frame_index, "time_s": round(frame_time, 3),
+                "reason": reason, "detections": int(len(boxes)),
+                "min_score": round(float(scores.min()), 4),
+            }) + "\n")
+            self.index.flush()
+        except OSError as exc:
+            self.failed = f"{type(exc).__name__}: {exc}"
+            print(f"WARNING: frame logging failed ({self.failed}); "
+                  "detection continues without it")
+            return
+
+        self.saved += 1
+        self.reasons[reason] += 1
+        self.last_saved_at = frame_time
+
+    def close(self):
+        try:
+            self.index.close()
+        except OSError:
+            pass
+
+
+def unassociated_indices(rows, count):
+    """
+    Detections the tracker did not emit a track for this frame.
+
+    ByteTrack reports, in column 7 of each emitted row, the index of the
+    input detection that fed it. Anything else was dropped or is a new track
+    still waiting for its confirming second frame.
+    """
+
+    used = set(rows[:, 7].astype(int).tolist()) if len(rows) else set()
+    return [i for i in range(count) if i not in used]
+
+
 # ByteTrack's low-score band. Boxes between this and the operating point can
 # continue an existing track but never start one.
 TRACK_LOW_THRESH = 0.1
@@ -695,6 +801,21 @@ def main():
     )
 
     parser.add_argument("--conf", type=float, default=CONF)
+    parser.add_argument(
+        "--log-frames",
+        default=None,
+        metavar="DIR",
+        help="Save frames worth labelling - uncertain or unconfirmed "
+             "detections - with pre-labels, for offline fine-tuning.",
+    )
+    parser.add_argument(
+        "--unassociated",
+        choices=["report", "drop"],
+        default=UNASSOCIATED_DEFAULT,
+        help="Detections the tracker has not confirmed. The ICD specifies "
+             "reporting them with track_id -1; 'drop' emits confirmed tracks "
+             "only. See training_log.md section 51.",
+    )
     parser.add_argument("--device", default=0)
 
     parser.add_argument(
@@ -835,6 +956,10 @@ def main():
               f"{args.hfov:.0f} deg HFOV, mount {args.mount_pitch:.0f} deg")
     else:
         print("geoloc:  disabled (no --telemetry or --mavlink)")
+
+    frame_logger = (
+        FrameLogger(args.log_frames, args.conf) if args.log_frames else None
+    )
 
     geoloc_refused = 0
     bad_frames = 0
@@ -1062,6 +1187,22 @@ def main():
 
                 records.append(record)
 
+            if frame_logger is not None:
+                frame_logger.consider(
+                    frame, frame_index, frame_time, boxes, scores,
+                    bool(unassociated_indices(tracks, len(boxes))),
+                )
+
+            if args.unassociated == "report":
+                for index in unassociated_indices(tracks, len(boxes)):
+                    x1, y1, x2, y2 = (float(v) for v in boxes[index])
+                    records.append({
+                        "track_id": -1,
+                        "box": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
+                        "confidence": round(float(scores[index]), 4),
+                        "state": "unknown",
+                    })
+
             movement.prune(frame_index)
 
             frame_times.append(time.perf_counter() - frame_start)
@@ -1147,6 +1288,9 @@ def main():
     if receiver is not None:
         receiver.stop()
 
+    if frame_logger is not None:
+        frame_logger.close()
+
     if args.show:
         cv2.destroyAllWindows()
 
@@ -1172,6 +1316,11 @@ def main():
         "bad_frames_skipped": bad_frames,
         "frame_errors": frame_errors,
         "stream_failed": stream_failed,
+        "frames_logged": (
+            {"saved": frame_logger.saved, **frame_logger.reasons,
+             "failed": frame_logger.failed}
+            if frame_logger is not None else None
+        ),
         "ego_motion": ego is not None,
         "ego_motion_failures": ego.failures if ego is not None else None,
         "ego_motion_status": ego_status_counts if ego is not None else None,

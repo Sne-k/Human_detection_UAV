@@ -520,7 +520,7 @@ it depends on, so the ordering can be argued with rather than followed.
 |---|------|-----|
 | D1 | **Ground-station consumer** | Map, target list, confidence, movement state, coordinate and uncertainty, fed from recorded JSONL. Useful and fully offline - but it demonstrates rather than de-risks, so it follows the correctness work. |
 | D2 | **Frozen release package** | Weights, training config, seed, dataset version, test predictions, threshold sweep, mission-cost curve and exact WBF parameters as one reproducible bundle. The analysis is done; the packaging is not. |
-| D3 | **Frame logging for offline labelling** | Save frames near the confidence threshold and where tracks broke - the highest-value frames to label. Turns every future flight into training data, with no onboard learning and no runtime cost. |
+| D3 | **Frame logging for offline labelling** | **Done.** `payload.py --log-frames DIR` saves frames where a detection scored within 0.15 of the operating point or the tracker did not confirm one, each with a YOLO-format pre-label and an index entry, rate-limited and capped; a write failure turns logging off without touching detection. On the test sequence it kept 7 frames of 120. *Originally:* Save frames near the confidence threshold and where tracks broke - the highest-value frames to label. Turns every future flight into training data, with no onboard learning and no runtime cost. |
 | D4 | **Simulated end-to-end mission** | The sum of A and B rather than separate work. Worth stating as the pre-hardware milestone. |
 
 ---
