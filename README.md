@@ -359,6 +359,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `quantize_int8.py` | INT8 static quantisation, with a QDQ-fusion diagnostic and mandatory re-evaluation |
 | `run_experiment_queue.py` | Chain training, test metrics, predictions and error analysis unattended |
 | `export_models.py` | ONNX export with verification against PyTorch |
+| `make_release.py` | Freezes the deployed detector into one checksummed, traceable package; `--verify` checks it |
 | `coverage_requirements.py` | Derive required frame rate from the mission |
 | `sensor_resolution_study.py` | Detection vs thermal sensor resolution |
 | `fov_study.py` | Sensor resolution and lens chosen together: recall against area searched per hour |
