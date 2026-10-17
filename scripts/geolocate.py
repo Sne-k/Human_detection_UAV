@@ -238,7 +238,10 @@ def offset_to_latlon(lat_deg, lon_deg, east_m, north_m):
 def estimate_error(altitude_m, slant_range_m, attitude_error_deg=1.0,
                    altitude_error_m=2.0, gps_error_m=2.5):
     """
-    Ground-position error budget, in metres.
+    Ground-position error budget, in metres. SUPERSEDED by propagate_error().
+
+    Kept so earlier results can be reproduced. It understates the error away
+    from nadir and at altitude - see propagate_error() for why and by how much.
 
     Attitude error dominates and grows with look angle, which is why it is
     scaled by slant range rather than altitude.
@@ -255,6 +258,72 @@ def estimate_error(altitude_m, slant_range_m, attitude_error_deg=1.0,
     return math.sqrt(
         attitude_term ** 2 + altitude_term ** 2 + gps_error_m ** 2
     )
+
+
+# One-sigma input uncertainties. The same values estimate_error() assumed;
+# what changed is how they are propagated. Yaw at 1 degree is optimistic for
+# a magnetometer heading - a GPS-derived heading in steady flight is better,
+# a compass in a turn worse - and should be revisited with the real FC.
+SIGMA_ROLL_DEG = 1.0
+SIGMA_PITCH_DEG = 1.0
+SIGMA_YAW_DEG = 1.0
+SIGMA_ALTITUDE_M = 2.0
+SIGMA_GPS_M = 2.5          # per horizontal axis
+
+
+def propagate_error(camera, px, py, telemetry):
+    """
+    Ground-position uncertainty, propagated through the real geometry.
+
+    Each input is moved by its one-sigma uncertainty and the projection
+    re-run; the displacements form a covariance, and the result is its RMS
+    radial error, sqrt(trace) - the distance-RMS of GNSS practice.
+
+    This replaces estimate_error(), which modelled attitude as a single
+    one-degree term scaled by slant range. Two things are wrong with that:
+    roll, pitch and yaw are three independent errors, and away from nadir a
+    tilt moves the ground point by about slant^2 / altitude per radian, not
+    slant. Simulated against the ICD acceptance criterion - median error
+    within the reported value - estimate_error failed at the 100 m image
+    corner and at every 130 m position (geolocation_sensitivity.py). The RMS
+    radial error of a two-dimensional Gaussian always bounds its median, so
+    this satisfies the criterion by construction, to first order, without
+    being grossly conservative.
+
+    Linearised at the actual attitude, which matters in a bank: the same
+    pixel's sensitivity changes as the camera tilts.
+    """
+
+    altitude = telemetry["altitude_m"]
+    roll = telemetry.get("roll_deg", 0.0)
+    pitch = telemetry.get("pitch_deg", 0.0)
+    yaw = telemetry.get("yaw_deg", 0.0)
+
+    base = project_to_ground(camera, px, py, altitude, roll, pitch, yaw)
+
+    if base is None:
+        return None
+
+    perturbations = (
+        (altitude + SIGMA_ALTITUDE_M, roll, pitch, yaw),
+        (altitude, roll + SIGMA_ROLL_DEG, pitch, yaw),
+        (altitude, roll, pitch + SIGMA_PITCH_DEG, yaw),
+        (altitude, roll, pitch, yaw + SIGMA_YAW_DEG),
+    )
+
+    variance = 2.0 * SIGMA_GPS_M ** 2
+
+    for args in perturbations:
+        moved = project_to_ground(camera, px, py, *args)
+
+        if moved is None:
+            # The perturbed ray misses the ground: the fix is too close to the
+            # horizon for a meaningful error, and should not be trusted.
+            return None
+
+        variance += (moved[0] - base[0]) ** 2 + (moved[1] - base[1]) ** 2
+
+    return math.sqrt(variance)
 
 
 # ---------------------------------------------------------------------
@@ -289,6 +358,13 @@ def locate_detection(camera, box, telemetry):
 
     east, north, slant = result
 
+    # The ICD makes the uncertainty part of the contract: no uncertainty, no
+    # coordinate.
+    error = propagate_error(camera, px, py, telemetry)
+
+    if error is None:
+        return None
+
     lat, lon = offset_to_latlon(
         telemetry["lat"], telemetry["lon"], east, north
     )
@@ -299,9 +375,7 @@ def locate_detection(camera, box, telemetry):
         "east_m": round(east, 2),
         "north_m": round(north, 2),
         "slant_range_m": round(slant, 2),
-        "position_error_m": round(
-            estimate_error(telemetry["altitude_m"], slant), 2
-        ),
+        "position_error_m": round(error, 2),
     }
 
 

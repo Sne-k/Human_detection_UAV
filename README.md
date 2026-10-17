@@ -133,8 +133,8 @@ four classes. See [`docs/related_work.md`](docs/related_work.md).
 | IoU 0.50 (CV convention) | 0.58 m | 2,426 | 490 | 0.9291 |
 | **IoU 0.25 (mission-derived)** | **1.05 m** | **2,501** | **415** | **0.9579** |
 
-Each fix is reported with a **+/- 3.8 m** position uncertainty, which is 3.6x
-larger than the box error IoU 0.25 still accepts - so a detection rejected for
+Each fix is reported with a **+/- 4.3 m** position uncertainty at 100 m nadir,
+which is 4.1x larger than the box error IoU 0.25 still accepts - so a detection rejected for
 landing between 0.25 and 0.50 would have sent the rescue team to the same
 place. **75 more people, no model change.** mAP@50 is still reported as the
 comparable metric; see [`docs/training_log.md`](docs/training_log.md)

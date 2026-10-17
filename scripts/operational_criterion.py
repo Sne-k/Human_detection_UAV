@@ -59,8 +59,24 @@ THRESHOLDS = [0.50, 0.40, 0.30, 0.25, 0.20, 0.10]
 PERSON_W = 12
 PERSON_H = 19
 
-# Geolocation 1-sigma position error at 100 m nadir, from geolocate.py.
-GEOLOCATION_ERROR_M = 3.8
+# The position uncertainty the payload reports at 100 m nadir, computed from
+# geolocate.py rather than copied from it. It used to be hardcoded as 3.8 m;
+# when the error model was corrected to propagate each input through the
+# real geometry (training_log.md section 50) the copy would have gone stale
+# silently.
+def _reported_error_at_100m_nadir():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import geolocate
+
+    camera = geolocate.Camera(width=640, height=512, hfov_deg=50.0)
+    return geolocate.propagate_error(
+        camera, 320.0, 256.0,
+        {"altitude_m": 100.0, "roll_deg": 0.0, "pitch_deg": 0.0, "yaw_deg": 0.0},
+    )
+
+
+GEOLOCATION_ERROR_M = _reported_error_at_100m_nadir()
 
 
 def load_boxes(path, width, height, conf_min=0.0):
