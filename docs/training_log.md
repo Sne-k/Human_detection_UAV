@@ -3742,3 +3742,69 @@ It now runs from the last frame actually *read*.
 a violation. `tests/` holds 56 tests, each pinning a property a past bug
 violated; the 49 that need no artefacts run in about 12 s with no dataset,
 weights or GPU.
+
+---
+
+## 51. Unconfirmed Detections, and Tracking at Search-Mode Frame Rates
+
+Two open tasks, A0 and A4, turned out to be one measurement:
+`evaluate_tracking_gate.py` on 200 test images x 24 frames, at four
+inter-frame motions and two operating points, with one new configuration -
+the current runtime plus every detection the tracker did not confirm,
+reported with `track_id` -1 as the ICD specifies.
+
+### A0. Report what the tracker did not confirm
+
+"Persons" is how many of the 638 people were reported correctly at least
+once in their sequence: the question a rescue team cares about.
+
+| Drift (px/frame) | Detector ceiling | Tracks only | + unassociated | People lost by dropping |
+|-----------------:|-----------------:|------------:|---------------:|------------------------:|
+| 20 (flight, 7 FPS) | 605 | 572 | 603 | 31 (4.9 %) |
+| 40 | 600 | 569 | 599 | 30 (4.7 %) |
+| 60 | 600 | 564 | 600 | 36 (5.6 %) |
+| 90 | 603 | 555 | 599 | 44 (6.9 %) |
+
+At conf 0.25. Dropping unconfirmed detections - what the payload did - lost
+one person in twenty: people the detector saw, sometimes repeatedly, who
+never reached the tracker's confirmation and so never left the aircraft.
+Reporting them recovers almost all of the gap to the detector's own ceiling.
+
+The cost, at conf 0.25 and 20 px/frame: 1,185 unconfirmed detections over
+4,800 frames, 40 % of them on a person - about one false unconfirmed report
+per 7 frames, or one a second at 7 FPS. Frame precision falls from 0.773 to
+0.739, back to the detector's own. At conf 0.05 it is a flood: 7,678
+emitted, 22 % on a person.
+
+**Decision: report, at the deployed operating point.** A missed person is
+the expensive error in search and rescue; a false unconfirmed dot that the
+operator can see is unconfirmed is cheap. That depends on the ground station
+showing the difference, so D1 was built to: `-1` records are drawn hollow
+and grey, counted apart from targets, and kept out of the mission log's
+target list. `UNASSOCIATED_DEFAULT` is now `report`; `--unassociated drop`
+should accompany any operating point below about 0.1.
+
+### A4. Does tracking survive search-mode frame rates?
+
+Search mode was to relax the frame-rate requirement toward 1.34 FPS - at
+100 m and 20 m/s, about 100 px of ground motion between frames. Since
+section 49 tracking depends on optical flow, and flow had only been tested
+to 20 px/frame.
+
+Frame recall of the tracked output, conf 0.25: 0.846, 0.802, 0.748, 0.694 at
+20, 40, 60 and 90 px/frame. The before-fix and unstabilised runtimes are at
+0.2 - 7 % throughout: without stabilisation, nothing survives. But per-person
+the loss is small - 572 to 555 people - because a person needs confirming
+once, not every frame. With unassociated reporting, 603 to 599.
+
+So search mode needs no separate code path. The payload as deployed, run
+slower because the companion computer is slower, still reports 94 % of the
+people a perfect tracker could (599 of 638). The case for a dedicated mode
+was saving compute by dropping ego-motion; section 49 removed that option and
+this shows it is not needed.
+
+Limits, stated: the drift here is pure translation of a still image, which
+is the best case for optical flow, and a person crosses the 640 px width in
+about 7 frames at 90 px/frame, where the 512 px along-track height of a
+real pass gives about 5. Movement classification at low frame rates - its
+history and threshold are in frames - is untested; that is B3.

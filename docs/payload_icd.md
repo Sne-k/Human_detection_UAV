@@ -211,7 +211,7 @@ delimited, produced by `scripts/realtime_detect.py` and enriched by
 | `persons`          | int     | Detections in this frame                   |
 | `uav`              | object/null | Aircraft state used for this frame's fixes; `null` when telemetry is configured but stale or missing, and then no fix is reported |
 | `ego_motion`       | enum    | `ok`, `predicted`, `lost`, `init` - health of the camera-motion estimate. Tracking runs in the stabilised frame, so anything but `ok` means identity and movement are degraded |
-| `track_id`         | int     | Persistent identity; -1 if unassociated    |
+| `track_id`         | int     | Persistent identity; -1 if unassociated (reported by default; see below) |
 | `box`              | float[4]| Pixel box, x1 y1 x2 y2                     |
 | `confidence`       | float   | Detector confidence                        |
 | `state`            | enum    | `moving`, `stationary`, `edge`, `unknown`  |
@@ -224,6 +224,24 @@ A coordinate handed to a rescue team without an uncertainty invites more
 confidence than the measurement supports. The error estimate combines attitude,
 altitude and GPS terms and grows with slant range. The ground station must
 display it.
+
+### Unconfirmed detections (`track_id` -1)
+
+A detection the tracker has not confirmed is still reported, with
+`track_id` -1 and `state` `unknown`. Dropping them lost about one person in
+twenty who the detector did see (training_log.md section 51); reporting them
+adds roughly one false unconfirmed detection per second at the deployed
+operating point. The ground station must show them apart from confirmed
+targets. `--unassociated drop` restores confirmed-only output, and belongs
+with any operating point below about 0.1.
+
+### Transport
+
+The stream is written to on-board storage (IF-5) and, with
+`payload.py --udp HOST:PORT`, sent as one JSON datagram per frame. Sending
+is fire and forget: a failed send is counted in the run summary and never
+delays or stops detection. The on-board file remains the complete record.
+`ground_station.py` is the reference consumer.
 
 ### `state` semantics
 

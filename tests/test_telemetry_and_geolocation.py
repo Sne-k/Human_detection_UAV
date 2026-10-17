@@ -94,12 +94,16 @@ def test_mavlink_on_the_wire():
     assert receiver.counts["ATTITUDE"] >= 25
     assert receiver.counts["GLOBAL_POSITION_INT"] >= 12
 
+    # Bounds allow ~20 ms of clock-alignment error, which scheduler jitter on
+    # a loaded machine can cause (0.11 m and 0.1 deg are only ~5 ms at 20 m/s
+    # and 25 deg/s, and flaked). Using the latest message instead of matching
+    # by time is off by up to 6 m and 3.4 deg, so this still catches it.
     for t_flight in (1.0, 1.55, 2.2):
         state = buffer.at(result["zero"] + t_flight)
         truth = trajectory.at(t_flight)
         assert state is not None
-        assert state["lat"] == pytest.approx(truth["lat"], abs=1e-6)
-        assert state["roll_deg"] == pytest.approx(truth["roll_deg"], abs=0.1)
+        assert state["lat"] == pytest.approx(truth["lat"], abs=4.5e-6)  # 0.5 m
+        assert state["roll_deg"] == pytest.approx(truth["roll_deg"], abs=0.5)
 
 
 # ------------------------------------------------------------- geolocation

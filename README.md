@@ -214,6 +214,27 @@ python scripts/payload.py --source flight.mp4 --telemetry state.jsonl --jsonl de
 python scripts/payload.py --source 0 --mavlink udpin:0.0.0.0:14550 --jsonl detections.jsonl
 ```
 
+Watch it from the ground: the payload sends each record over UDP, and the
+ground station maps the aircraft's track and every person's fix with its
+uncertainty circle, lists targets, and writes a mission log on exit. It also
+replays a recorded stream.
+
+```bash
+python scripts/payload.py --source 0 --mavlink udpin:0.0.0.0:14550 --udp 192.168.1.20:14660
+```
+
+```bash
+python scripts/ground_station.py --udp 0.0.0.0:14660
+```
+
+```bash
+python scripts/ground_station.py --replay detections.jsonl
+```
+
+Detections the tracker has not yet confirmed are reported with `track_id` -1
+(dropping them lost one person in twenty - training_log section 51); the
+ground station shows them hollow and apart from confirmed targets.
+
 Check the output against the interface contract, and run the tests:
 
 ```bash
@@ -325,6 +346,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `telemetry.py` | Aircraft state over MAVLink, matched to frames by capture time |
 | `mavlink_sim.py` | Transmits a known flight as real MAVLink, for testing without a flight controller |
 | `validate_jsonl.py` | Checks a detection stream against the ICD contract; non-zero exit on violation |
+| `ground_station.py` | Receives the stream (UDP, followed file, or replay): map with uncertainty circles, target list, mission log |
 | `webcam_trial.py` | Live-camera trial, explicit about what it can and cannot validate |
 | `verify_deployed_config.py` | Runs the payload's detection stage and checks it reproduces the parts - stops before tracking |
 | `evaluate_telemetry_sync.py` | Attitude error from telemetry timing, over real MAVLink |

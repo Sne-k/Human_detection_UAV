@@ -234,11 +234,17 @@ def mission_log(picture, path):
     }, indent=2), encoding="utf-8")
 
 
-def records_from_udp(address):
+def udp_socket(address):
     host, _, port = address.rpartition(":")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((host or "0.0.0.0", int(port)))
     sock.settimeout(0.1)
+    return sock
+
+
+def records_from_udp(sock):
+    """Yields records, or None when nothing arrived - so the display keeps
+    redrawing over a silent link."""
 
     while True:
         try:
@@ -285,7 +291,7 @@ def main():
     args = parser.parse_args()
 
     if args.udp:
-        records = records_from_udp(args.udp)
+        records = records_from_udp(udp_socket(args.udp))
     else:
         records = records_from_file(args.follow or args.replay, follow=bool(args.follow))
 

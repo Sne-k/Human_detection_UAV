@@ -92,8 +92,11 @@ DEFAULT_RGB = "MT-004"
 CONF = 0.25
 
 # Whether detections the tracker has not confirmed are reported (ICD: with
-# track_id -1). Set from the measurement in training_log.md section 51.
-UNASSOCIATED_DEFAULT = "drop"
+# track_id -1). Measured in training_log.md section 51: dropping them loses
+# 5-7 % of people from the output entirely; reporting them costs about one
+# unconfirmed false detection per second at conf 0.25, which the ground
+# station shows apart from confirmed targets. Below conf ~0.1 they flood.
+UNASSOCIATED_DEFAULT = "report"
 NMS_IOU = 0.70
 FUSE_IOU = 0.55
 
