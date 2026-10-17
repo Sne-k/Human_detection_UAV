@@ -802,6 +802,13 @@ def main():
 
     parser.add_argument("--conf", type=float, default=CONF)
     parser.add_argument(
+        "--udp",
+        default=None,
+        metavar="HOST:PORT",
+        help="Also send each record as a UDP datagram, e.g. to "
+             "ground_station.py. Interface IF-6.",
+    )
+    parser.add_argument(
         "--log-frames",
         default=None,
         metavar="DIR",
@@ -961,6 +968,18 @@ def main():
         FrameLogger(args.log_frames, args.conf) if args.log_frames else None
     )
 
+    udp = udp_target = None
+    udp_sent = udp_errors = 0
+
+    if args.udp:
+        import socket
+
+        host, _, port = args.udp.rpartition(":")
+        udp_target = (host or "127.0.0.1", int(port))
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.setblocking(False)
+        print(f"output:  UDP to {udp_target[0]}:{udp_target[1]}")
+
     geoloc_refused = 0
     bad_frames = 0
     frame_errors = 0
@@ -1008,7 +1027,17 @@ def main():
                     if fix is not None:
                         located += 1
 
-        nonlocal stream, stream_failed
+        nonlocal stream, stream_failed, udp_sent, udp_errors
+
+        if udp is not None:
+            # Fire and forget. A dead or saturated link must never slow or
+            # stop detection; the on-board JSONL remains the record.
+            try:
+                udp.sendto(json.dumps(out, separators=(",", ":")).encode("utf-8"),
+                           udp_target)
+                udp_sent += 1
+            except OSError:
+                udp_errors += 1
 
         if stream is not None:
             try:
@@ -1316,6 +1345,8 @@ def main():
         "bad_frames_skipped": bad_frames,
         "frame_errors": frame_errors,
         "stream_failed": stream_failed,
+        "udp_sent": udp_sent if udp is not None else None,
+        "udp_errors": udp_errors if udp is not None else None,
         "frames_logged": (
             {"saved": frame_logger.saved, **frame_logger.reasons,
              "failed": frame_logger.failed}
