@@ -133,8 +133,8 @@ four classes. See [`docs/related_work.md`](docs/related_work.md).
 | IoU 0.50 (CV convention) | 0.58 m | 2,426 | 490 | 0.9291 |
 | **IoU 0.25 (mission-derived)** | **1.05 m** | **2,501** | **415** | **0.9579** |
 
-Each fix is reported with a **+/- 3.8 m** position uncertainty, which is 3.6x
-larger than the box error IoU 0.25 still accepts - so a detection rejected for
+Each fix is reported with a **+/- 4.3 m** position uncertainty at 100 m nadir,
+which is 4.1x larger than the box error IoU 0.25 still accepts - so a detection rejected for
 landing between 0.25 and 0.50 would have sent the rescue team to the same
 place. **75 more people, no model change.** mAP@50 is still reported as the
 comparable metric; see [`docs/training_log.md`](docs/training_log.md)
@@ -204,10 +204,52 @@ did until the fix in [`docs/training_log.md`](docs/training_log.md)
 section 49 - emits almost nothing in flight. Every record comes from a track,
 so this is the difference between a working payload and a silent one.
 
-Run it:
+Run it on a recording, or live with MAVLink from the flight controller:
 
 ```bash
-python scripts/payload.py --source flight.mp4 --model MT-011b --telemetry state.jsonl --jsonl detections.jsonl
+python scripts/payload.py --source flight.mp4 --telemetry state.jsonl --jsonl detections.jsonl
+```
+
+```bash
+python scripts/payload.py --source 0 --mavlink udpin:0.0.0.0:14550 --jsonl detections.jsonl
+```
+
+Watch it from the ground: the payload sends each record over UDP, and the
+ground station maps the aircraft's track and every person's fix with its
+uncertainty circle, lists targets, and writes a mission log on exit. It also
+replays a recorded stream.
+
+```bash
+python scripts/payload.py --source 0 --mavlink udpin:0.0.0.0:14550 --udp 192.168.1.20:14660
+```
+
+```bash
+python scripts/ground_station.py --udp 0.0.0.0:14660
+```
+
+```bash
+python scripts/ground_station.py --replay detections.jsonl
+```
+
+Detections the tracker has not yet confirmed are reported with `track_id` -1
+(dropping them lost one person in twenty - training_log section 51); the
+ground station shows them hollow and apart from confirmed targets.
+
+Fly the whole chain over a simulated mission with known truth, and score
+what reaches the ground station - or score any stream against it:
+
+```bash
+python scripts/simulate_mission.py --monte-carlo 200
+```
+
+Check the output against the interface contract, and run the tests:
+
+```bash
+python scripts/validate_jsonl.py detections.jsonl
+```
+
+```bash
+python -m pytest tests
 ```
 
 ---
@@ -307,10 +349,20 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `realtime_detect.py` | Single-model pipeline; `payload.py` reuses its components |
 | `ensemble_detect.py` | Ensemble inference with per-stage timing |
 | `single_model_wbf.py` | Fusion vs suppression on one model, the free precision gain |
-| `geolocate.py` | Pixel detections to ground coordinates |
+| `geolocate.py` | Pixel detections to ground coordinates, uncertainty propagated through the real geometry |
+| `telemetry.py` | Aircraft state over MAVLink, matched to frames by capture time |
+| `mavlink_sim.py` | Transmits a known flight as real MAVLink, for testing without a flight controller |
+| `validate_jsonl.py` | Checks a detection stream against the ICD contract; non-zero exit on violation |
+| `ground_station.py` | Receives the stream (UDP, followed file, or replay): map with uncertainty circles, target list, mission log |
 | `webcam_trial.py` | Live-camera trial, explicit about what it can and cannot validate |
 | `verify_deployed_config.py` | Runs the payload's detection stage and checks it reproduces the parts - stops before tracking |
+| `evaluate_telemetry_sync.py` | Attitude error from telemetry timing, over real MAVLink |
+| `geolocation_sensitivity.py` | Frame conventions and the ICD geolocation acceptance test, simulated |
+| `evaluate_ego_health.py` | Camera-motion failure modes and fallback policies |
 | `evaluate_tracking_gate.py` | Scores what the payload actually emits, through tracking, on drifting sequences with exact truth |
+| `evaluate_frame_drops.py` | Movement labels and track identity when frames are lost - one in k, random, bursts |
+| `evaluate_tracker_stress.py` | Identity under stress: walkers, crossings, turns, descents, search-mode rates |
+| `simulate_mission.py` | Whole chain over geo-referenced real imagery: people found, false targets, position error vs reported uncertainty |
 
 ### Dataset preparation
 
@@ -339,8 +391,10 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `quantize_int8.py` | INT8 static quantisation, with a QDQ-fusion diagnostic and mandatory re-evaluation |
 | `run_experiment_queue.py` | Chain training, test metrics, predictions and error analysis unattended |
 | `export_models.py` | ONNX export with verification against PyTorch |
+| `make_release.py` | Freezes the deployed detector into one checksummed, traceable package; `--verify` checks it |
 | `coverage_requirements.py` | Derive required frame rate from the mission |
 | `sensor_resolution_study.py` | Detection vs thermal sensor resolution |
+| `fov_study.py` | Sensor resolution and lens chosen together: recall against area searched per hour |
 | `operating_point.py` | Pick the confidence threshold from mission cost |
 | `operational_criterion.py` | Derive the IoU criterion from the geolocation error budget |
 

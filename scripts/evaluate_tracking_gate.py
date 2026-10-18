@@ -90,7 +90,7 @@ MIN_VISIBLE = 0.5    # fraction of a person inside the frame to count as truth
 # the old tracker with every other argument unchanged.
 LEGACY_CONF = 0.25
 
-CONFIGS = ("detector", "before-fix", "unstabilised", "current")
+CONFIGS = ("detector", "before-fix", "unstabilised", "current", "current+unassoc")
 
 
 def load_truth(stem, width, height):
@@ -230,7 +230,8 @@ def run_sequence(image, source_truth, drift, frames, detector, confs, payload,
     background = not source_truth
 
     # Detector and ego-motion once per frame, shared by every configuration.
-    ego = realtime_detect.EgoMotionEstimator()
+    # The payload's own estimator configuration, not the class default.
+    ego = payload.make_ego_estimator()
     prepared = []
 
     for ox, oy in offsets(frames, drift):
@@ -256,6 +257,7 @@ def run_sequence(image, source_truth, drift, frames, detector, confs, payload,
         present = set()
         reported = {name: set() for name in CONFIGS}
         track_hit = {name: {} for name in CONFIGS if name != "detector"}
+        unassoc_emitted = unassoc_matched = 0
 
         for frame, (boxes, scores, sources), cumulative, truth in prepared:
             keep = scores >= conf
@@ -288,6 +290,19 @@ def run_sequence(image, source_truth, drift, frames, detector, confs, payload,
                 else:
                     emitted[name] = (np.zeros((0, 4)), np.zeros(0, dtype=int))
 
+                if name == "current":
+                    # Task A0: also report what the tracker did not confirm,
+                    # with track_id -1, as the ICD specifies.
+                    extra = payload.unassociated_indices(rows, len(fused[0]))
+                    extra_boxes = fused[0][extra] if extra else np.zeros((0, 4))
+                    emitted["current+unassoc"] = (
+                        np.concatenate([emitted["current"][0], extra_boxes]),
+                        np.concatenate([emitted["current"][1],
+                                        -np.ones(len(extra), dtype=int)]),
+                    )
+                    unassoc_emitted += len(extra)
+                    unassoc_matched += len(greedy_pairs(truth_boxes, extra_boxes))
+
             for name, (out_boxes, track_ids) in emitted.items():
                 pairs = greedy_pairs(truth_boxes, out_boxes)
 
@@ -302,6 +317,8 @@ def run_sequence(image, source_truth, drift, frames, detector, confs, payload,
                     hits = {pi for _, pi in pairs}
 
                     for pi, tid in enumerate(track_ids):
+                        if tid < 0:
+                            continue
                         track_hit[name][tid] = (
                             track_hit[name].get(tid, False) or pi in hits
                         )
@@ -318,6 +335,8 @@ def run_sequence(image, source_truth, drift, frames, detector, confs, payload,
                     spurious if background else 0
                 )
 
+        tally["current+unassoc"]["unassociated_emitted"] = unassoc_emitted
+        tally["current+unassoc"]["unassociated_matched"] = unassoc_matched
         results[conf] = tally
 
     return results
@@ -381,7 +400,8 @@ def main():
             for conf, tally in seq.items():
                 for name, counts in tally.items():
                     for key, value in counts.items():
-                        totals[drift][conf][name][key] += value
+                        totals[drift][conf][name][key] = (
+                            totals[drift][conf][name].get(key, 0) + value)
 
         if n % 50 == 0 or n == len(images):
             print(f"  {n}/{len(images)} images, "
@@ -406,6 +426,11 @@ def main():
 
             for name in CONFIGS:
                 t = totals[drift][conf][name]
+                if name == "current+unassoc" and t.get("unassociated_emitted"):
+                    extra = (f"   (unassociated: {t['unassociated_emitted']} emitted, "
+                             f"{t['unassociated_matched'] / t['unassociated_emitted']:.0%} on a person)")
+                else:
+                    extra = ""
                 recall = t["matched"] / t["truth_boxes"] if t["truth_boxes"] else 0.0
                 precision = t["matched"] / t["emitted"] if t["emitted"] else 0.0
                 persons = f"{t['persons_reported']}/{t['persons_present']}"
@@ -416,7 +441,7 @@ def main():
                       f"{persons:>13s} "
                       f"{'-' if dash else t['tracks']:>7} "
                       f"{'-' if dash else t['spurious_tracks']:>9} "
-                      f"{'-' if dash else t['spurious_tracks_background']:>8}")
+                      f"{'-' if dash else t['spurious_tracks_background']:>8}{extra}")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

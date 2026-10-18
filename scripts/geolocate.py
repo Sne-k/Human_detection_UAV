@@ -17,8 +17,9 @@ Method
 The ground is modelled as a horizontal plane at a known elevation. For each
 detection:
 
-1. The box's ground-contact point (bottom-centre of the box, where a standing
-   person meets the ground) is converted to a normalised image coordinate.
+1. The box's ground-contact point - where the person meets the ground: the
+   bottom of the box seen obliquely, its centre seen from overhead - is
+   converted to a normalised image coordinate. See `ground_point`.
 2. That is turned into a ray in camera coordinates using the camera's field of
    view.
 3. The ray is rotated into the world frame by the camera mount angle and the
@@ -41,8 +42,8 @@ about 1.7 m on the ground at nadir, and considerably worse at oblique angles.
 `estimate_error` reports this so the ground station can be told how much to
 trust each fix rather than being handed a bare coordinate.
 
-The bottom-centre convention also assumes the person is standing on the
-modelled ground plane. A person on a roof or a slope will be projected to the
+The ground-point convention also assumes the person is on the modelled
+ground plane. A person on a roof or a slope will be projected to the
 wrong place, and terrain elevation is not modelled.
 
 Usage:
@@ -238,7 +239,10 @@ def offset_to_latlon(lat_deg, lon_deg, east_m, north_m):
 def estimate_error(altitude_m, slant_range_m, attitude_error_deg=1.0,
                    altitude_error_m=2.0, gps_error_m=2.5):
     """
-    Ground-position error budget, in metres.
+    Ground-position error budget, in metres. SUPERSEDED by propagate_error().
+
+    Kept so earlier results can be reproduced. It understates the error away
+    from nadir and at altitude - see propagate_error() for why and by how much.
 
     Attitude error dominates and grows with look angle, which is why it is
     scaled by slant range rather than altitude.
@@ -257,23 +261,110 @@ def estimate_error(altitude_m, slant_range_m, attitude_error_deg=1.0,
     )
 
 
+# One-sigma input uncertainties. The same values estimate_error() assumed;
+# what changed is how they are propagated. Yaw at 1 degree is optimistic for
+# a magnetometer heading - a GPS-derived heading in steady flight is better,
+# a compass in a turn worse - and should be revisited with the real FC.
+SIGMA_ROLL_DEG = 1.0
+SIGMA_PITCH_DEG = 1.0
+SIGMA_YAW_DEG = 1.0
+SIGMA_ALTITUDE_M = 2.0
+SIGMA_GPS_M = 2.5          # per horizontal axis
+
+
+def propagate_error(camera, px, py, telemetry):
+    """
+    Ground-position uncertainty, propagated through the real geometry.
+
+    Each input is moved by its one-sigma uncertainty and the projection
+    re-run; the displacements form a covariance, and the result is its RMS
+    radial error, sqrt(trace) - the distance-RMS of GNSS practice.
+
+    This replaces estimate_error(), which modelled attitude as a single
+    one-degree term scaled by slant range. Two things are wrong with that:
+    roll, pitch and yaw are three independent errors, and away from nadir a
+    tilt moves the ground point by about slant^2 / altitude per radian, not
+    slant. Simulated against the ICD acceptance criterion - median error
+    within the reported value - estimate_error failed at the 100 m image
+    corner and at every 130 m position (geolocation_sensitivity.py). The RMS
+    radial error of a two-dimensional Gaussian always bounds its median, so
+    this satisfies the criterion by construction, to first order, without
+    being grossly conservative.
+
+    Linearised at the actual attitude, which matters in a bank: the same
+    pixel's sensitivity changes as the camera tilts.
+    """
+
+    altitude = telemetry["altitude_m"]
+    roll = telemetry.get("roll_deg", 0.0)
+    pitch = telemetry.get("pitch_deg", 0.0)
+    yaw = telemetry.get("yaw_deg", 0.0)
+
+    base = project_to_ground(camera, px, py, altitude, roll, pitch, yaw)
+
+    if base is None:
+        return None
+
+    perturbations = (
+        (altitude + SIGMA_ALTITUDE_M, roll, pitch, yaw),
+        (altitude, roll + SIGMA_ROLL_DEG, pitch, yaw),
+        (altitude, roll, pitch + SIGMA_PITCH_DEG, yaw),
+        (altitude, roll, pitch, yaw + SIGMA_YAW_DEG),
+    )
+
+    variance = 2.0 * SIGMA_GPS_M ** 2
+
+    for args in perturbations:
+        moved = project_to_ground(camera, px, py, *args)
+
+        if moved is None:
+            # The perturbed ray misses the ground: the fix is too close to the
+            # horizon for a meaningful error, and should not be trusted.
+            return None
+
+        variance += (moved[0] - base[0]) ** 2 + (moved[1] - base[1]) ** 2
+
+    return math.sqrt(variance)
+
+
 # ---------------------------------------------------------------------
 # Detection handling
 # ---------------------------------------------------------------------
 
-def locate_detection(camera, box, telemetry):
-    """
-    Geolocate one detection.
+# Width over height of a standing person, for placing the ground point.
+PERSON_WIDTH_TO_HEIGHT = 0.3
 
-    The ground-contact point is the bottom-centre of the box, where a standing
-    person meets the ground. The box centre would sit roughly at waist height
-    and project further from the aircraft.
+
+def ground_point(camera, box):
+    """
+    The pixel where the person meets the ground.
+
+    Seen from the side, that is the bottom of the box: the feet. From straight
+    overhead it is the centre - the box is the person's footprint. In between,
+    a standing person of height H and width w, seen at depression angle e,
+    spans H cos e + w sin e of the image vertically, of which the footprint is
+    the w sin e at the bottom; the ground point is the middle of that.
+
+    This used to be the bottom of the box at every angle. At nadir that put
+    every fix half a box south of the person - about 1 m at 100 m, a
+    systematic bias the ICD rules out, found by the simulated mission
+    (training_log section 53). Off nadir the correction shrinks quickly: 7 %
+    of the box height at 30 deg, 17 % at 60 deg, half at 90 deg.
     """
 
     x1, y1, x2, y2 = box
+    e = camera.mount_pitch
+    w = PERSON_WIDTH_TO_HEIGHT
 
-    px = (x1 + x2) / 2.0
-    py = y2
+    lift = (w * math.sin(e) / 2.0) / (math.cos(e) + w * math.sin(e))
+
+    return (x1 + x2) / 2.0, y2 - lift * (y2 - y1)
+
+
+def locate_detection(camera, box, telemetry):
+    """Geolocate one detection, from its ground point (`ground_point`)."""
+
+    px, py = ground_point(camera, box)
 
     result = project_to_ground(
         camera,
@@ -289,6 +380,13 @@ def locate_detection(camera, box, telemetry):
 
     east, north, slant = result
 
+    # The ICD makes the uncertainty part of the contract: no uncertainty, no
+    # coordinate.
+    error = propagate_error(camera, px, py, telemetry)
+
+    if error is None:
+        return None
+
     lat, lon = offset_to_latlon(
         telemetry["lat"], telemetry["lon"], east, north
     )
@@ -299,9 +397,7 @@ def locate_detection(camera, box, telemetry):
         "east_m": round(east, 2),
         "north_m": round(north, 2),
         "slant_range_m": round(slant, 2),
-        "position_error_m": round(
-            estimate_error(telemetry["altitude_m"], slant), 2
-        ),
+        "position_error_m": round(error, 2),
     }
 
 
@@ -392,19 +488,16 @@ def demo():
           f"(expect 0, 0 - directly below the aircraft)")
 
     print()
-    print("   A detection box projects from its BOTTOM edge, not its centre,")
-    print("   so a box straddling the image centre lands slightly aft:")
+    print("   Looking straight down, a box projects from its centre - the")
+    print("   person's footprint - so a box centred below the aircraft lands")
+    print("   directly beneath it:")
 
     fix = locate_detection(
         camera, [310, 246, 330, 266], {**base, "roll_deg": 0, "pitch_deg": 0}
     )
 
-    expected = 100.0 * math.tan(
-        math.atan(((2 * 266 / camera.height) - 1) * math.tan(camera.vfov / 2))
-    )
-
-    print(f"   box bottom 10 px below centre -> north {fix['north_m']:+.2f} m "
-          f"(predicted {-expected:+.2f} m)")
+    print(f"   box centred on the image -> north {fix['north_m']:+.2f} m "
+          f"(predicted +0.00 m)")
     print(f"   error estimate +/- {fix['position_error_m']:.1f} m")
     print()
 

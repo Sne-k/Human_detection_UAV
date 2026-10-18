@@ -209,8 +209,9 @@ delimited, produced by `scripts/realtime_detect.py` and enriched by
 | `frame`            | int     | Monotonic frame counter                    |
 | `timestamp_s`      | float   | Seconds since stream start                 |
 | `persons`          | int     | Detections in this frame                   |
-| `uav`              | object  | Aircraft state used for this frame's fixes |
-| `track_id`         | int     | Persistent identity; -1 if unassociated    |
+| `uav`              | object/null | Aircraft state used for this frame's fixes; `null` when telemetry is configured but stale or missing, and then no fix is reported |
+| `ego_motion`       | enum    | `ok`, `predicted`, `lost`, `init` - health of the camera-motion estimate. Tracking runs in the stabilised frame, so anything but `ok` means identity and movement are degraded |
+| `track_id`         | int     | Persistent identity; -1 if unassociated (reported by default; see below) |
 | `box`              | float[4]| Pixel box, x1 y1 x2 y2                     |
 | `confidence`       | float   | Detector confidence                        |
 | `state`            | enum    | `moving`, `stationary`, `edge`, `unknown`  |
@@ -224,10 +225,43 @@ confidence than the measurement supports. The error estimate combines attitude,
 altitude and GPS terms and grows with slant range. The ground station must
 display it.
 
+A person seen in several frames gets several fixes. The ground station
+places a still person at their inverse-variance mean and reports the
+smallest single fix's uncertainty - not that divided by sqrt(N), because
+GPS and attitude errors drift and one pass largely repeats one error. On
+the simulated missions this sigma is conservative by about a quarter
+(training_log.md section 53).
+
+The ground point is where the person meets the ground: the box centre
+from overhead, its bottom seen from the side, and in between by the
+camera's depression angle (`geolocate.ground_point`).
+
+### Unconfirmed detections (`track_id` -1)
+
+A detection the tracker has not confirmed is still reported, with
+`track_id` -1 and `state` `unknown`. Dropping them lost about one person in
+twenty who the detector did see (training_log.md section 51); reporting them
+adds roughly one false unconfirmed detection per second at the deployed
+operating point. The ground station must show them apart from confirmed
+targets. `--unassociated drop` restores confirmed-only output, and belongs
+with any operating point below about 0.1.
+
+### Transport
+
+The stream is written to on-board storage (IF-5) and, with
+`payload.py --udp HOST:PORT`, sent as one JSON datagram per frame. Sending
+is fire and forget: a failed send is counted in the run summary and never
+delays or stops detection. The on-board file remains the complete record.
+`ground_station.py` is the reference consumer.
+
 ### `state` semantics
 
 `edge` and `unknown` mean the movement state is **withheld**, not that the
-person is stationary. A person is reported regardless of movement state. See
+person is stationary. Movement is also withheld until the camera-motion
+estimate has been `ok` for a full history window, and `stationary` is
+withheld until a track's own history is a full window or spans two seconds -
+a short history under the threshold is not evidence of stillness. A person
+is reported regardless of movement state. See
 `realtime_pipeline.md` section 2.
 
 ### Bandwidth
@@ -259,6 +293,16 @@ reported `ground.lat/lon` against survey.
 **Acceptance:** median error within the reported `position_error_m`, with no
 systematic bias in along-track or across-track direction. A systematic bias
 indicates a mounting-angle or frame-convention error rather than noise.
+
+**Judge it over several flights, not one.** GPS and altitude errors drift
+over tens of seconds, so every fix in one pass shares most of one error. On
+the simulated missions an honest payload fails the median test on about 2 %
+of single flights, and one flight's mean offset is that flight's GPS drift,
+not a bias. Fly at least three passes on separate occasions; judge bias by
+the mean offset across them; treat one failed pass as a reason to repeat,
+not a verdict. Recording the aircraft with RTK, where available, separates
+the payload's error from the autopilot's. `simulate_mission.py
+--monte-carlo` reproduces this analysis.
 
 ---
 

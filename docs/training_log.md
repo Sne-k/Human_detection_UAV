@@ -3608,3 +3608,453 @@ Section 46 assembled the payload specifically to close this gap and claimed to
 have done so. It had closed it up to the tracker, and the tracker was where the
 gap was. The evaluator added here runs the payload's own `track_frame`, so the
 measured path and the shipped path are now the same function.
+
+---
+
+## 50. Pre-Hardware Integration: Telemetry, Geolocation, Motion, Faults
+
+The task list's correctness and validation items, worked through. Each was
+measured, and three of them overturned an assumption.
+
+### A1 + A2. MAVLink, and matching telemetry to frames by time
+
+Telemetry was looked up by frame index, which worked only because the test
+sequence was generated with one record per frame. A flight controller sends
+ATTITUDE and GLOBAL_POSITION_INT separately, at their own rates, on its own
+boot clock. `telemetry.py` reads them over pymavlink, aligns the clock with a
+windowed minimum of arrival minus boot time, keeps position and attitude as
+separate series, and interpolates each to a frame's capture time - refusing
+across a dropout or a stalled link, so stale state yields `"uav": null` and no
+coordinate rather than a confident wrong one.
+
+`mavlink_sim.py` transmits a known banked turn as real MAVLink over UDP with
+2-40 ms of random link delay. Against exact truth, in the turn:
+
+| Method | Worst attitude error | Ground error at 100 m |
+|--------|---------------------:|----------------------:|
+| Latest received message | 3.41 deg | 6.0 m |
+| **Matched by capture time** | **0.07 deg** | **0.12 m** |
+
+Two things the measurement caught on the way. On Windows `time.monotonic`
+ticks at about 15.6 ms, which put the clock-offset estimate 6 ms *early* - a
+minimum over delays can only ever be late - so frames and telemetry now share
+`perf_counter`. And the first evaluation queried after all telemetry had
+arrived; live, at capture time the next sample has not arrived, so the payload
+was holding the previous one. A delay line now holds each frame's records
+until telemetry newer than its capture time exists. Live state age fell from a
+mean of 126 ms to 51 ms, with every frame interpolated.
+
+### B1. The geolocation acceptance test, in simulation
+
+The ICD's one quantitative criterion: median ground error within the reported
+`position_error_m`, with no systematic bias. Simulated by perturbing every
+input by the uncertainties `estimate_error` claimed to cover:
+
+| Altitude | Position | Reported (old) | Median error | ICD |
+|---------:|----------|---------------:|-------------:|-----|
+| 100 m | corner | 3.94 m | 3.96 m | **FAIL** |
+| 130 m | centre | 3.92 m | 4.07 m | **FAIL** |
+| 130 m | corner | 4.28 m | 4.52 m | **FAIL** |
+
+It modelled attitude as one 1-degree term scaled by slant range; roll, pitch
+and yaw are three independent errors, and off nadir a tilt moves the ground
+point by about slant^2 / altitude per radian. `propagate_error` now moves each
+input by its sigma through the real projection, linearised at the actual
+attitude, and reports the RMS radial error - which always bounds a 2D
+Gaussian's median. It passes at all nine points with an 18-20% margin and no
+bias above 0.11 m. At 100 m nadir the reported uncertainty becomes 4.3 m, and
+section 32's argument strengthens: 4.1x the box error IoU 0.25 accepts.
+
+Seven frame-convention checks pass. Two first failed because my expectations
+were wrong: rolling right swings the belly *out* to the left, so a nadir
+camera looks west heading north; nose-up points the belly forward.
+
+### A3. When the motion estimate fails
+
+Tracking runs in the stabilised frame (section 49), so every record now
+depends on optical flow. Measured against known 20 px/frame drift:
+
+- **Featureless ground** (people kept, background flat) fails *detectably*:
+  bad steps have zero inliers, and the old fallback then assumed the camera
+  had stopped - wrong by the full ground motion.
+- **Fog** fails *confidently*: corners are mostly sensor noise, which averages
+  away at the coarse pyramid levels, so flow reports near-zero motion from
+  hundreds of agreeing points. The synthetic fog also destroyed the detector,
+  so its tracking result was uninformative.
+- **Crossing from land onto water** is the case that mattered and the first
+  measurement missed, because its featureless sequences were blank from
+  frame 1. At the boundary, forward-only flow "tracks" points into the flat
+  frame and reports a confident wrong step; prediction then repeats it.
+
+| Policy, land to water | Steps wrong | Stabilisation error 11 frames later |
+|-----------------------|------------:|------------------------------------:|
+| identity (old) | 32% | 182 px |
+| predict | 32% | 182 px |
+| **predict + forward-backward** | **3%** | **0 px** |
+
+The forward-backward check - track each point back and keep only those that
+return - is therefore on, and 80 corners instead of 300 pays for it: 14.2 ms
+per frame against 18.4 ms for the old configuration without it. Movement state
+is now withheld until the estimate has been measured, not predicted, for a
+full history window, and each record carries `ego_motion`.
+
+**Not solved:** ground featureless from the first frame, where about 3% of
+steps are confidently wrong in ways no vision-only check tried catches. That
+needs an independent motion reference - telemetry, now available since A1.
+Task A5.
+
+### The pipeline cost was understated
+
+Section 39 put ego-motion at 6.6 ms, from subtracting two noisy end-to-end
+frame times on the 512 x 384 test sequence. Measured in isolation it is
+13.2 ms at 512 x 384 and **18.4 ms at the real 640 x 512** - so every frame
+rate derived from section 39 was optimistic. With the new configuration:
+
+| | Dev CPU | Pi 5 estimate | Pi 5 FPS |
+|---|--------:|---------------|----------|
+| Section 39 (as documented) | 47.5 ms | 143 - 238 ms | 4.2 - 7.0 |
+| **Measured, 640 x 512** | **55.1 ms** | **165 - 276 ms** | **3.6 - 6.1** |
+
+The tracking requirement at 60 m, 6.7 FPS, now fails outright, and 100 m is
+marginal. Detect-and-report at 1.34 FPS still clears with large margin - which
+strengthens the case for search mode (A4).
+
+### B2. Failure injection
+
+Every one of these used to end the run. Now each costs only what it must:
+
+| Fault | Behaviour |
+|-------|-----------|
+| Corrupt frame - None, empty, greyscale, wrong size | Skipped and counted |
+| Exception anywhere in per-frame work | That frame skipped, run continues |
+| Disk full while writing the stream | Stream stops, detection continues (ICD IF-5) |
+| Telemetry stops | `"uav": null`, no fabricated coordinates |
+| Camera drops out | Reconnects for up to 30 s without a frame |
+| Camera opens but never delivers | Gives up after 30 s - not forever |
+
+The last row is a bug the test found in my first version: the reconnect budget
+reset on every successful *open*, so a wedged camera would be retried forever.
+It now runs from the last frame actually *read*.
+
+### B5 + B7. The contract, and tests
+
+`validate_jsonl.py` checks every record against the ICD and exits non-zero on
+a violation. `tests/` holds 56 tests, each pinning a property a past bug
+violated; the 49 that need no artefacts run in about 12 s with no dataset,
+weights or GPU.
+
+---
+
+## 51. Unconfirmed Detections, and Tracking at Search-Mode Frame Rates
+
+Two open tasks, A0 and A4, turned out to be one measurement:
+`evaluate_tracking_gate.py` on 200 test images x 24 frames, at four
+inter-frame motions and two operating points, with one new configuration -
+the current runtime plus every detection the tracker did not confirm,
+reported with `track_id` -1 as the ICD specifies.
+
+### A0. Report what the tracker did not confirm
+
+"Persons" is how many of the 638 people were reported correctly at least
+once in their sequence: the question a rescue team cares about.
+
+| Drift (px/frame) | Detector ceiling | Tracks only | + unassociated | People lost by dropping |
+|-----------------:|-----------------:|------------:|---------------:|------------------------:|
+| 20 (flight, 7 FPS) | 605 | 572 | 603 | 31 (4.9 %) |
+| 40 | 600 | 569 | 599 | 30 (4.7 %) |
+| 60 | 600 | 564 | 600 | 36 (5.6 %) |
+| 90 | 603 | 555 | 599 | 44 (6.9 %) |
+
+At conf 0.25. Dropping unconfirmed detections - what the payload did - lost
+one person in twenty: people the detector saw, sometimes repeatedly, who
+never reached the tracker's confirmation and so never left the aircraft.
+Reporting them recovers almost all of the gap to the detector's own ceiling.
+
+The cost, at conf 0.25 and 20 px/frame: 1,185 unconfirmed detections over
+4,800 frames, 40 % of them on a person - about one false unconfirmed report
+per 7 frames, or one a second at 7 FPS. Frame precision falls from 0.773 to
+0.739, back to the detector's own. At conf 0.05 it is a flood: 7,678
+emitted, 22 % on a person.
+
+**Decision: report, at the deployed operating point.** A missed person is
+the expensive error in search and rescue; a false unconfirmed dot that the
+operator can see is unconfirmed is cheap. That depends on the ground station
+showing the difference, so D1 was built to: `-1` records are drawn hollow
+and grey, counted apart from targets, and kept out of the mission log's
+target list. `UNASSOCIATED_DEFAULT` is now `report`; `--unassociated drop`
+should accompany any operating point below about 0.1.
+
+### A4. Does tracking survive search-mode frame rates?
+
+Search mode was to relax the frame-rate requirement toward 1.34 FPS - at
+100 m and 20 m/s, about 100 px of ground motion between frames. Since
+section 49 tracking depends on optical flow, and flow had only been tested
+to 20 px/frame.
+
+Frame recall of the tracked output, conf 0.25: 0.846, 0.802, 0.748, 0.694 at
+20, 40, 60 and 90 px/frame. The before-fix and unstabilised runtimes are at
+0.2 - 7 % throughout: without stabilisation, nothing survives. But per-person
+the loss is small - 572 to 555 people - because a person needs confirming
+once, not every frame. With unassociated reporting, 603 to 599.
+
+So search mode needs no separate code path. The payload as deployed, run
+slower because the companion computer is slower, still reports 94 % of the
+people a perfect tracker could (599 of 638). The case for a dedicated mode
+was saving compute by dropping ego-motion; section 49 removed that option and
+this shows it is not needed.
+
+Limits, stated: the drift here is pure translation of a still image, which
+is the best case for optical flow, and a person crosses the 640 px width in
+about 7 frames at 90 px/frame, where the 512 px along-track height of a
+real pass gives about 5. Movement classification at low frame rates - its
+history and threshold are in frames - is untested; that is B3.
+
+---
+
+## 52. Lost Frames: Split Identities and Premature Stillness
+
+Movement is decided from a track's last 15 observations against a 15 px
+threshold, so anything that changes the time between observations changes
+what that threshold means - a slower computer, search-mode rates, a camera
+that drops frames. `evaluate_frame_drops.py` replays the pan sequence
+(`make_test_sequence.py`: 31 stationary people, one composited walker on a known
+trajectory) through the real payload with frames removed, and scores every
+movement label.
+
+### What broke
+
+**A gap split a moving person into new targets.** ByteTrack predicts one
+step per update. After a gap the walker's track is predicted where they were
+one frame ago, the box no longer overlaps, the detection goes unmatched, and
+a new track forms under a new identity. Stationary people survive because in
+the stabilised frame they do not move. With bursts of four lost frames in
+every twelve, **one walker became eight targets** on the ground station.
+
+**Each new track was then called stationary.** A state was reported from the
+fifth observation, but the threshold was set for a full window, and a walker
+covers 9-14 px in five observations at 15 FPS. Under bursts, 11 of the
+walker's 30 labels said `stationary`.
+
+### Fixes
+
+- The payload times every frame - by the source's capture time where it
+  supplies one, the clock for a live camera - and when an interval is more
+  than 1.5x the recent median, steps the tracker through the missed frames
+  with no detections, so its motion model keeps pace.
+- Below the threshold, `stationary` now needs a full window *or* two seconds
+  of history. Crossing the threshold early still declares `moving`: that is
+  evidence; staying under it briefly is not. Two seconds is what the full
+  window spans at the 7 FPS design rate, and it keeps `stationary` available
+  in search mode, where a person is in view for only about five frames that
+  span three seconds or more - and stillness is what a rescue team most
+  needs to know.
+- Found on the way: a live camera without telemetry was timed as frame
+  index / 30 FPS, wrong whenever processing is slower than the camera,
+  which on the Pi is always. It now uses the clock.
+
+### Result
+
+On a 600-frame version of the sequence:
+
+| Pattern | Walker's identities | Walker labelled moving | Stationary people labelled moving |
+|---------|--------------------:|-----------------------:|----------------------------------:|
+| All frames, 15 FPS | 1 | 100 % | 0 of 3,009 |
+| One in 2 / 3 / 5 | 1 | 100 % | 0 |
+| Random 20 % / 40 % lost | 1 | 100 % | 0 |
+| Bursts 4 of 12, 8 of 24 | 1 (was 8 and 5) | 100 % | 0 |
+| One in 8 / 11 (1.9 / 1.4 FPS) | **never confirmed** | - | 0 of 218 / 129 |
+
+Stationary noise stays at 1-8 px against the 15 px threshold throughout;
+no stationary person was labelled moving under any pattern, before or after.
+
+### What remains
+
+At one frame in eight or fewer, the walker moves about its own width
+between processed frames and is **never confirmed as a track**: the first
+two sightings, which a new track needs to match, do not overlap. It is still
+reported - 39 and 29 sightings, as unconfirmed `-1` records, because of
+section 51 - but with no identity or movement state. At 1.34 FPS and 100 m a
+walker at 1.4 m/s moves about 60 % of their own width per frame, at the edge
+of what overlap association tolerates; a runner fails. Inflating boxes for
+association only would help, at the risk of swapping the identities of
+people standing close together, so it goes to the tracker stress suite (B4)
+to be measured on crowded scenes rather than adopted here.
+
+---
+
+## 53. The Whole Chain, Over Ground Where the Answer Is Known
+
+Every part of the payload had been tested on its own. `simulate_mission.py`
+flies all of it - video, telemetry, detection, tracking, geolocation, the
+ground station - and scores what a rescue coordinator would be told: people
+found, where, how sure, and how many targets were false.
+
+**The ground** is a strip of 24 real HIT-UAV test images, stacked along
+track at one ground sampling distance, 1.7 km long. Only steep views
+(camera pitch 80-90 deg, from the file names) are used, so treating them as
+nadir imagery is honest, and only images with people. Every labelled person
+becomes a fixed point with a latitude and longitude.
+
+**The flight** is level and nadir at 100 m and 20 m/s, at 7 FPS: 601 frames.
+For a level nadir pinhole camera, crops of the strip are exactly what the
+camera sees. Telemetry is the truth plus errors at the sigmas `geolocate.py`
+assumes, each drifting as a Gauss-Markov process - 30 s correlation for GPS
+and barometric altitude, 2 s for attitude - because one flight's errors are
+mostly one error repeated, and white noise would make averaging look far
+better than it is.
+
+**Identity is scored in pixels.** Each frame's truth is exact, so every
+detection is assigned to the labelled person its box sits on, and every
+track to the person it sat on most. The first scorer matched fixes to
+people by ground distance and mis-assigned within groups standing closer
+than the fix error - it reported 76 % found where the truth was 95 %.
+
+### Three faults, found and fixed
+
+**1. A recording longer than 30 s lost everything but its last 30 s.** The
+telemetry buffer keeps 30 s to bound memory on a live link, and
+`load_jsonl` used the same buffer for a file loaded whole. On the first
+mission 390 of 601 frames had no aircraft state, and 25 % of people were
+found. Every replay of a real flight log would have done this. A recording
+is now kept whole; a test pins it.
+
+**2. At nadir, every fix sat half a box south.** The ground point was the
+bottom-centre of the box - right for an oblique view, where that is the
+feet, wrong from overhead, where the box is the person's footprint. Now it
+depends on the depression angle: the centre at 90 deg, the bottom at 0, and
+for a standing person in between (`geolocate.ground_point`). The old rule's
+offset is half a box, about 1 m at 100 m, and the first scorer measured
+-0.96 m north; now, per detection with perfect telemetry, it is +0.01 /
++0.03 m.
+
+**3. Choosing each target's tightest fix was itself biased.** The ground
+station reported the fix with the smallest uncertainty. But uncertainty
+grows with the altitude reading, so the choice favoured fixes whose
+altitude read low, which pulls positions toward the aircraft: -0.61 m north,
+3.4 standard errors, with every individual fix unbiased. It now places a
+still person at the inverse-variance mean of all their fixes, and reports
+the smallest single fix's sigma - deliberately not divided by sqrt(N),
+because drifting errors do not average out within a pass.
+
+### Result
+
+Three missions, different tiles:
+
+| Mission | People | Found (confirmed) | Incl. unconfirmed | Second identities | On no labelled person |
+|---------|-------:|------------------:|------------------:|------------------:|----------------------:|
+| seed 0 | 185 | 176 (95 %) | 182 | 6 | 23 |
+| seed 1 | 220 | 215 (98 %) | 220 | 10 | 19 |
+| seed 2 | 220 | 213 (97 %) | 218 | 11 | 18 |
+
+Targets on no labelled person were inspected: some are clearly people
+HIT-UAV did not label, others real false positives - a hot spot, a dark
+dot on a road edge, an object on a seam between tiles. No stationary
+person was labelled moving on any mission.
+
+**Geolocation**, re-run under 200 independent instrument-error draws per
+mission (`--monte-carlo`; detections do not depend on telemetry, only
+their positions do, so one flight can be re-geolocated many times):
+
+| | seed 0 | seed 1 | seed 2 |
+|---|---:|---:|---:|
+| Flight median error, median of draws | 2.63 m | 2.68 m | 2.76 m |
+| ... 90th percentile | 3.53 m | 3.69 m | 3.63 m |
+| Reported sigma, median | 4.38 m | 4.35 m | 4.41 m |
+| RMS error / RMS sigma | 0.74 | 0.74 | 0.75 |
+| Targets within 1 / 2 sigma | 84 / 100 % | 84 / 100 % | 83 / 100 % |
+| Single flights passing the ICD median test | 100 % | 98 % | 98 % |
+| Bias across draws (east / north) | -0.05 / -0.09 m | +0.08 / +0.05 m | +0.09 / +0.04 m |
+
+Bias standard error 0.09 m: no systematic bias. The reported sigma is
+conservative by about a quarter - honest, and slightly pessimistic, because
+averaging a pass's fixes does cancel the fast attitude error that the
+reported sigma, by design, gives no credit for.
+
+### What this means for flight acceptance
+
+The seed 2 mission as flown failed the ICD median test: 4.78 m against
+4.41 m. Its GPS error had drifted to -1.0 / -3.3 m for the whole pass, which
+every target shared. The Monte Carlo puts that at about a 2 % event for an
+honest payload. A single flight test over surveyed markers would have
+called a correct payload broken - and one flight's mean offset, which the
+ICD reads as bias, was entirely that flight's GPS drift.
+
+So the ICD's geolocation acceptance now says to judge over at least three
+passes on separate occasions, bias by the mean across them, and a single
+failure as a reason to repeat. RTK on the aircraft, where available,
+separates the payload's error from the autopilot's.
+
+### Limits
+
+No wind, roll, terrain or altitude change; a static scene apart from camera
+motion; seams between images that no real ground has. People in the tiles
+were imaged at 60-130 m and are rendered at the scale they were captured,
+not rescaled to 100 m. The payload ran at 15 FPS on the development CPU, so
+every frame was processed; on the Pi it would run at 3.6-6.1 FPS, whose
+effect on tracking and movement section 52 measured.
+
+---
+
+## 54. Tracker Stress: Crossings, Turns, Descents, Search Mode
+
+`evaluate_tracking_gate.py` asked whether tracking lets people through.
+`evaluate_tracker_stress.py` asks whether it keeps them apart and keeps
+them whole. Each scene is a real steep-view HIT-UAV test image - its
+labelled people standing still - plus walkers composited onto known
+straight paths, under a virtual nadir camera with a known pose per frame.
+The payload's own detector, ego-motion, tracker and movement classifier run
+on the rendered frames; 40 images per scene. Every association setting runs
+on identical detector and ego-motion output.
+
+Steep views only (80-90 deg). A first trial rotated oblique images for the
+turn scene, which shows standing people tilted over - something no camera
+sees, since an oblique camera pans when the aircraft yaws - and the
+detector's recall fell accordingly. With a nadir camera, in-plane rotation
+is what a turn really does.
+
+At association scale 1.0 (the deployed tracker):
+
+| Scene | Walkers found by detector | Covered by a track | Confirmed | Identities per walker | Merged IDs |
+|-------|-----:|-----:|-----:|-----:|-----:|
+| Cruise, 20 px/frame, 1.4 m/s | 70 % | 62 % | 91 / 120 | 1.12 | 5 |
+| Runners, 4 m/s | 69 % | 57 % | 95 / 120 | 1.15 | 3 |
+| Head-on crossing | 58 % | 52 % | 64 / 80 | 1.77 | 16 |
+| Turn, 21 deg/s | 67 % | 61 % | 95 / 120 | 1.14 | 3 |
+| Descent, 100 to 71 m | 69 % | 61 % | 93 / 120 | 1.11 | 3 |
+| Search, 1.4 FPS | 72 % | 15 % | 33 / 120 | 1.03 | 3 |
+
+Standing people: 91-94 % found by the detector and 87-90 % covered by a
+track in every 7 FPS scene, about 1.02 identities each; 0-9 of their many
+thousand labels said moving. Walkers' moving labels were 96-100 % right.
+
+**Turns and descents are handled.** Rotation and scale go through the
+similarity transform the ego-motion estimator measures, and identity
+holds as well as in straight flight.
+
+**Crossings are not, and no setting fixes them.** Two people walking
+head-on through each other share a box for several frames; the detector
+often sees one person (58 % of walker frames found), and the tracker hands
+identities across - 1.4-1.8 per walker and a merged identity in about 30 %
+of crossings (16 merged IDs over 40 scenes, against about 4 in scenes
+without a crossing). Positions stay right, so the map is not wrong about
+where people are, only about which is which. Overlap tracking of
+near-identical 12 px targets cannot do better; appearance features at that
+size carry little.
+
+**Search mode is where association breaks.** At 1.4 FPS a walker moves
+about their own width between frames and only 33 of 120 are confirmed.
+Enlarging boxes for association only:
+
+| Scale | Walkers confirmed | Walker coverage | Merged IDs, search | At 7 FPS cruise |
+|------:|-----:|-----:|-----:|-----|
+| 1.0 | 33 / 120 | 15 % | 3 | 91 / 120, 5 merged |
+| 1.5 | 59 / 120 | 34 % | 11 | 94 / 120, 6 merged |
+| 2.0 | 71 / 120 | 40 % | 15 | 94 / 120, 6 merged |
+| 2.5 | 79 / 120 | 45 % | 19 | 94 / 120, 6 merged |
+
+It works, and it costs: five times the identity swaps at 2x. At the Pi's
+3.6-6.1 FPS walkers move a fraction of their width per frame and the
+setting buys almost nothing. So the default stays 1.0, and
+`payload.py --assoc-scale 2.0` exists for a deliberate low-rate search
+configuration. Even without it, those walkers reach the map as unconfirmed
+detections (section 51) - with a position, without an identity.

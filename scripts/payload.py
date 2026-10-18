@@ -90,6 +90,13 @@ DEFAULT_THERMAL = "MT-011b"
 DEFAULT_RGB = "MT-004"
 
 CONF = 0.25
+
+# Whether detections the tracker has not confirmed are reported (ICD: with
+# track_id -1). Measured in training_log.md section 51: dropping them loses
+# 5-7 % of people from the output entirely; reporting them costs about one
+# unconfirmed false detection per second at conf 0.25, which the ground
+# station shows apart from confirmed targets. Below conf ~0.1 they flood.
+UNASSOCIATED_DEFAULT = "report"
 NMS_IOU = 0.70
 FUSE_IOU = 0.55
 
@@ -490,6 +497,36 @@ def transform_boxes(boxes, matrix):
     )
 
 
+# Boxes are enlarged by this factor for association only, and shrunk back
+# before anything is reported. ByteTrack associates by overlap, and a person
+# who moves about their own width between processed frames - a walker below
+# about 2 FPS - has none, so is never confirmed (training_log section 52).
+#
+# Measured in evaluate_tracker_stress.py (training_log section 54). At 1.4
+# FPS, 2x confirms 71 of 120 walkers instead of 33 - at the cost of five
+# times as many track IDs reported on two different people (15 against 3).
+# At 7 FPS it confirms 3 more of 120 and costs about one swap. The Pi runs at
+# 3.6-6.1 FPS, so 1.0 stays the default; --assoc-scale is for a deliberate
+# low-rate search configuration, where unconfirmed reporting (section 51)
+# already puts those walkers on the map without an identity.
+ASSOC_SCALE = 1.0
+
+
+def scale_boxes(boxes, factor):
+    """Scale xyxy boxes about their centres."""
+
+    if factor == 1.0 or not len(boxes):
+        return boxes
+
+    boxes = np.asarray(boxes, dtype=np.float64)
+    cx = (boxes[:, 0] + boxes[:, 2]) / 2.0
+    cy = (boxes[:, 1] + boxes[:, 3]) / 2.0
+    hw = (boxes[:, 2] - boxes[:, 0]) * factor / 2.0
+    hh = (boxes[:, 3] - boxes[:, 1]) * factor / 2.0
+
+    return np.stack([cx - hw, cy - hh, cx + hw, cy + hh], axis=1)
+
+
 def track_frame(tracker, boxes, scores, frame, cumulative=None):
     """
     One frame through the tracker, stabilised by ego-motion when available.
@@ -521,10 +558,15 @@ def track_frame(tracker, boxes, scores, frame, cumulative=None):
     """
 
     if cumulative is None:
-        rows = tracker.update(Detections(boxes, scores), frame)
+        rows = tracker.update(
+            Detections(scale_boxes(boxes, ASSOC_SCALE), scores), frame
+        )
 
         if not len(rows):
             return rows, np.zeros((0, 4))
+
+        rows = rows.copy()
+        rows[:, :4] = scale_boxes(rows[:, :4], 1.0 / ASSOC_SCALE)
 
         return rows, rows[:, :4].copy()
 
@@ -536,13 +578,15 @@ def track_frame(tracker, boxes, scores, frame, cumulative=None):
         return track_frame(tracker, boxes, scores, frame, None)
 
     rows = tracker.update(
-        Detections(transform_boxes(boxes, to_world), scores), frame
+        Detections(scale_boxes(transform_boxes(boxes, to_world), ASSOC_SCALE),
+                   scores),
+        frame,
     )
 
     if not len(rows):
         return rows, np.zeros((0, 4))
 
-    world = rows[:, :4].astype(np.float64).copy()
+    world = scale_boxes(rows[:, :4].astype(np.float64), 1.0 / ASSOC_SCALE)
 
     rows = rows.copy()
     rows[:, :4] = transform_boxes(world, cumulative)
@@ -550,9 +594,157 @@ def track_frame(tracker, boxes, scores, frame, cumulative=None):
     return rows, world
 
 
+# Camera-motion estimation, measured in evaluate_ego_health.py and
+# training_log.md section 50. One definition, used by the payload and by
+# every evaluation of it, so what is measured is what ships.
+#
+#   predict          repeat the last trusted step across a flow failure,
+#                    instead of assuming the camera stopped - which is wrong
+#                    by the full ground motion at flight speed
+#   forward_backward reject points that do not track back to where they
+#                    started. Crossing from land onto water, forward-only
+#                    flow reports a confident wrong step and the error
+#                    reached 170 px within five frames; with the check, 0 px
+#   max_corners 80   RANSAC needs a handful; 300 cost time and bought nothing.
+#                    With the check, 14.2 ms per 640 x 512 frame against
+#                    18.4 ms for the old configuration without it
+#
+# None of this rescues ground that is featureless from the first frame, and
+# about 3% of steps there are confidently wrong in ways no vision-only check
+# tried catches. That needs an independent motion reference from telemetry:
+# task A5.
+EGO_SETTINGS = dict(
+    min_inliers=1,
+    fallback="predict",
+    max_predict=30,
+    forward_backward=True,
+    max_corners=80,
+)
+
+
+def make_ego_estimator():
+    from realtime_detect import EgoMotionEstimator
+
+    return EgoMotionEstimator(**EGO_SETTINGS)
+
+
+class FrameLogger:
+    """
+    Save the frames worth labelling - task D3.
+
+    The detector was trained on someone else's data. The way to fix that is
+    offline: fly, collect, label on the ground, fine-tune, validate, deploy a
+    new frozen model - the two-stage recipe MT-011 showed works. This collects.
+
+    Saving everything would fill the card with easy frames that teach the
+    model nothing. A frame is saved when it is one the model was unsure
+    about:
+
+      uncertain    a detection scored within UNCERTAIN_MARGIN of the operating
+                   point - where the decision is closest to going either way
+      unconfirmed  a detection the tracker did not confirm - a target seen
+                   once, or a track that broke
+
+    Each saved frame gets a YOLO-format pre-label file of the model's own
+    boxes, so labelling is correcting rather than drawing. Saving is rate
+    limited and capped, and a write failure turns logging off without
+    touching detection.
+    """
+
+    UNCERTAIN_MARGIN = 0.15
+
+    def __init__(self, directory, conf, min_interval_s=1.0, max_frames=5000):
+        self.directory = Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.conf = conf
+        self.min_interval_s = min_interval_s
+        self.max_frames = max_frames
+        self.saved = 0
+        self.last_saved_at = None
+        self.failed = None
+        self.reasons = {"uncertain": 0, "unconfirmed": 0}
+        self.index = (self.directory / "index.jsonl").open("a", encoding="utf-8")
+
+    def consider(self, frame, frame_index, frame_time, boxes, scores, unconfirmed):
+        if self.failed or self.saved >= self.max_frames or not len(boxes):
+            return
+
+        if (self.last_saved_at is not None
+                and frame_time - self.last_saved_at < self.min_interval_s):
+            return
+
+        uncertain = bool(((scores >= self.conf)
+                          & (scores < self.conf + self.UNCERTAIN_MARGIN)).any())
+
+        if not (uncertain or unconfirmed):
+            return
+
+        reason = "uncertain" if uncertain else "unconfirmed"
+        stem = f"{frame_index:07d}"
+        height, width = frame.shape[:2]
+
+        try:
+            if not cv2.imwrite(str(self.directory / f"{stem}.png"), frame):
+                raise OSError("image write returned false")
+
+            lines = [
+                f"0 {(x1 + x2) / 2 / width:.6f} {(y1 + y2) / 2 / height:.6f} "
+                f"{(x2 - x1) / width:.6f} {(y2 - y1) / height:.6f}"
+                for x1, y1, x2, y2 in boxes
+            ]
+            (self.directory / f"{stem}.txt").write_text("\n".join(lines), encoding="utf-8")
+
+            self.index.write(json.dumps({
+                "frame": frame_index, "time_s": round(frame_time, 3),
+                "reason": reason, "detections": int(len(boxes)),
+                "min_score": round(float(scores.min()), 4),
+            }) + "\n")
+            self.index.flush()
+        except OSError as exc:
+            self.failed = f"{type(exc).__name__}: {exc}"
+            print(f"WARNING: frame logging failed ({self.failed}); "
+                  "detection continues without it")
+            return
+
+        self.saved += 1
+        self.reasons[reason] += 1
+        self.last_saved_at = frame_time
+
+    def close(self):
+        try:
+            self.index.close()
+        except OSError:
+            pass
+
+
+def unassociated_indices(rows, count):
+    """
+    Detections the tracker did not emit a track for this frame.
+
+    ByteTrack reports, in column 7 of each emitted row, the index of the
+    input detection that fed it. Anything else was dropped or is a new track
+    still waiting for its confirming second frame.
+    """
+
+    used = set(rows[:, 7].astype(int).tolist()) if len(rows) else set()
+    return [i for i in range(count) if i not in used]
+
+
 # ByteTrack's low-score band. Boxes between this and the operating point can
 # continue an existing track but never start one.
 TRACK_LOW_THRESH = 0.1
+
+
+def usable_frame(frame, height, width):
+    """A three-channel frame of the stream's size, or not worth processing."""
+
+    return (
+        isinstance(frame, np.ndarray)
+        and frame.ndim == 3
+        and frame.shape[2] == 3
+        and frame.shape[0] == height
+        and frame.shape[1] == width
+    )
 
 
 def build_tracker(frame_rate, conf=CONF):
@@ -596,6 +788,41 @@ def build_tracker(frame_rate, conf=CONF):
     )
 
     return BYTETracker(args)
+
+
+# A frame interval this many times the recent median counts as missed frames.
+# ByteTrack predicts one step per update, so after a gap a moving person's
+# track is predicted where they were a frame ago, the box no longer overlaps,
+# and the track is lost and re-created under a new identity: in a sequence
+# with bursts of lost frames one walking person became eight targets
+# (training_log section 52). Stationary people survive, because in the
+# stabilised frame they do not move. Stepping the tracker through the missed
+# frames with no detections lets its motion model keep pace.
+GAP_FACTOR = 1.5
+BRIDGE_MAX_STEPS = 30   # = track_buffer; a longer gap ends every track anyway
+
+
+def missed_steps(interval, recent):
+    """Frames missed before this one, judged against recent intervals."""
+
+    if not recent or interval <= 0:
+        return 0
+
+    nominal = float(np.median(recent))
+
+    if nominal <= 0 or interval < GAP_FACTOR * nominal:
+        return 0
+
+    return min(int(round(interval / nominal)) - 1, BRIDGE_MAX_STEPS)
+
+
+def bridge_gap(tracker, steps, frame):
+    """Advance the tracker through missed frames."""
+
+    empty = Detections(np.zeros((0, 4)), np.zeros(0))
+
+    for _ in range(steps):
+        tracker.update(empty, frame)
 
 
 # ---------------------------------------------------------------------
@@ -649,8 +876,47 @@ def main():
     )
 
     parser.add_argument("--conf", type=float, default=CONF)
+    parser.add_argument(
+        "--udp",
+        default=None,
+        metavar="HOST:PORT",
+        help="Also send each record as a UDP datagram, e.g. to "
+             "ground_station.py. Interface IF-6.",
+    )
+    parser.add_argument(
+        "--log-frames",
+        default=None,
+        metavar="DIR",
+        help="Save frames worth labelling - uncertain or unconfirmed "
+             "detections - with pre-labels, for offline fine-tuning.",
+    )
+    parser.add_argument(
+        "--assoc-scale",
+        type=float,
+        default=ASSOC_SCALE,
+        help="Enlarge boxes by this factor for tracker association only. "
+             "2.0 roughly doubles the walkers confirmed below 2 FPS, and "
+             "multiplies identity swaps by five. See training_log.md "
+             "section 54.",
+    )
+    parser.add_argument(
+        "--unassociated",
+        choices=["report", "drop"],
+        default=UNASSOCIATED_DEFAULT,
+        help="Detections the tracker has not confirmed. The ICD specifies "
+             "reporting them with track_id -1; 'drop' emits confirmed tracks "
+             "only. See training_log.md section 51.",
+    )
     parser.add_argument("--device", default=0)
 
+    parser.add_argument(
+        "--mavlink",
+        default=None,
+        help="Live aircraft state over MAVLink, e.g. udpin:0.0.0.0:14550 or "
+             "COM3. Requires a live camera source: frames are matched to "
+             "telemetry by capture time on the local clock.",
+    )
+    parser.add_argument("--mavlink-baud", type=int, default=57600)
     parser.add_argument(
         "--telemetry",
         default=None,
@@ -720,6 +986,9 @@ def main():
 
     tracker = build_tracker(fps, args.conf)
 
+    # track_frame reads the module setting; the flag only overrides it.
+    globals()["ASSOC_SCALE"] = args.assoc_scale
+
     if args.no_ego_motion:
         # Ego-motion used to serve movement classification alone. It now also
         # stabilises tracking, and every record the payload emits comes from a
@@ -730,18 +999,30 @@ def main():
         print("         (about 20 px/frame); expect almost no output from a")
         print("         moving aircraft. Fine for a static camera or webcam.")
 
-    ego = None if args.no_ego_motion else EgoMotionEstimator()
+    ego = None if args.no_ego_motion else make_ego_estimator()
+
+    # Movement state is withheld until the motion estimate has been measured,
+    # not predicted or lost, for a whole history window: a window containing
+    # a bad step cannot support a confident moving/stationary label.
+    clean_steps = 0
+    ego_status_counts = {"ok": 0, "predicted": 0, "lost": 0}
 
     movement = MovementTracker(
         history_frames=args.history,
         threshold_px=args.movement_threshold,
     )
 
-    # Geolocation is enabled only when aircraft state is available.
-    camera = None
-    telemetry = {}
+    # Geolocation is enabled only when aircraft state is available. State is
+    # matched to each frame by capture time, not frame index - see
+    # telemetry.py for why that matters and how the clocks are aligned.
+    import telemetry as telemetry_mod
 
-    if args.telemetry:
+    camera = None
+    state_buffer = None
+    receiver = None
+    live_clock = False
+
+    if args.telemetry or args.mavlink:
         camera = geolocate.Camera(
             width=width,
             height=height,
@@ -749,16 +1030,132 @@ def main():
             mount_pitch_deg=args.mount_pitch,
         )
 
-        with open(args.telemetry, encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    record = json.loads(line)
-                    telemetry[record["frame"]] = record
+    if args.mavlink:
+        if not str(args.source).isdigit():
+            print("WARNING: --mavlink with a recorded source. Frames are timed")
+            print("         on the live clock, so state will not match a file.")
 
-        print(f"geoloc:  {len(telemetry)} telemetry records, "
+        state_buffer = telemetry_mod.StateBuffer()
+        receiver = telemetry_mod.MavlinkReceiver(
+            args.mavlink, state_buffer, baud=args.mavlink_baud
+        ).start()
+        live_clock = True
+
+        print(f"geoloc:  MAVLink {args.mavlink}, "
+              f"{args.hfov:.0f} deg HFOV, mount {args.mount_pitch:.0f} deg")
+    elif args.telemetry:
+        state_buffer = telemetry_mod.load_jsonl(args.telemetry, fps)
+
+        print(f"geoloc:  {len(state_buffer)} telemetry samples, matched by time, "
               f"{args.hfov:.0f} deg HFOV, mount {args.mount_pitch:.0f} deg")
     else:
-        print("geoloc:  disabled (no --telemetry)")
+        print("geoloc:  disabled (no --telemetry or --mavlink)")
+
+    frame_logger = (
+        FrameLogger(args.log_frames, args.conf) if args.log_frames else None
+    )
+
+    udp = udp_target = None
+    udp_sent = udp_errors = 0
+
+    if args.udp:
+        import socket
+
+        host, _, port = args.udp.rpartition(":")
+        udp_target = (host or "127.0.0.1", int(port))
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.setblocking(False)
+        print(f"output:  UDP to {udp_target[0]}:{udp_target[1]}")
+
+    geoloc_refused = 0
+    bad_frames = 0
+    frame_errors = 0
+    stream_failed = None
+    stream_start = telemetry_mod.CLOCK()
+
+    # Geolocation delay line. Live, a frame's capture time is newer than any
+    # telemetry received, so its state could only be held - up to a sample
+    # period plus link delay stale. Each frame's records are therefore queued
+    # and geolocated once telemetry newer than the capture time has arrived,
+    # so the state is interpolated. Measured over MAVLink in a 25 degree
+    # banked turn: 0.07 degree worst-case attitude error interpolated, 3.4
+    # degrees held - 0.12 m against 6 m on the ground at 100 m. The cost is
+    # output latency of one telemetry period, a fraction of a second.
+    # Recorded telemetry is all present, so it resolves immediately.
+    import collections
+
+    pending = collections.deque()
+    geoloc_wait_s = 0.5
+
+    def resolve(frame_time, out):
+        nonlocal located, geoloc_refused
+
+        if state_buffer is not None:
+            aircraft = state_buffer.at(frame_time)
+
+            if aircraft is None:
+                # Stale or missing: say so rather than omit the field.
+                geoloc_refused += 1
+                out["uav"] = None
+            else:
+                out["uav"] = {
+                    "lat": aircraft["lat"],
+                    "lon": aircraft["lon"],
+                    "altitude_m": aircraft["altitude_m"],
+                    "state_age_s": aircraft["state_age_s"],
+                }
+
+                for record in out["detections"]:
+                    fix = geolocate.locate_detection(
+                        camera, record["box"], aircraft
+                    )
+                    record["ground"] = fix
+
+                    if fix is not None:
+                        located += 1
+
+        nonlocal stream, stream_failed, udp_sent, udp_errors
+
+        if udp is not None:
+            # Fire and forget. A dead or saturated link must never slow or
+            # stop detection; the on-board JSONL remains the record.
+            try:
+                udp.sendto(json.dumps(out, separators=(",", ":")).encode("utf-8"),
+                           udp_target)
+                udp_sent += 1
+            except OSError:
+                udp_errors += 1
+
+        if stream is not None:
+            try:
+                stream.write(json.dumps(out) + "\n")
+                stream.flush()
+            except OSError as exc:
+                # A full or failed disk must not stop detection (ICD IF-5).
+                # Stop writing, say so once, keep going.
+                stream_failed = f"{type(exc).__name__}: {exc}"
+                print(f"WARNING: detection stream write failed ({stream_failed});"
+                      " detection continues without it")
+
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+                stream = None
+
+    def flush(final=False):
+        while pending:
+            frame_time, out = pending[0]
+
+            if live_clock and not final and state_buffer is not None:
+                waited = telemetry_mod.CLOCK() - frame_time
+
+                if not state_buffer.ready(frame_time) and waited < geoloc_wait_s:
+                    break
+
+            pending.popleft()
+            resolve(frame_time, out)
 
     writer = None
 
@@ -821,125 +1218,183 @@ def main():
             # Not on the main thread, or unsupported on this platform.
             pass
 
+    # A live camera is timed on the clock even without telemetry. Stream
+    # time - frame index over the camera's nominal rate - is wrong whenever
+    # processing is slower than the camera, which on the Pi it always is.
+    if str(args.source).isdigit() and not args.telemetry:
+        live_clock = True
+
+    last_frame_time = None
+    recent_intervals = deque(maxlen=30)
+    steps_bridged = 0
+
     for frame in frames:
-        frame_start = time.perf_counter()
+        # A source may supply its own capture time with each frame.
+        frame, source_time = frame if isinstance(frame, tuple) else (frame, None)
 
-        cumulative = (
-            ego.update(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-            if ego is not None
-            else None
-        )
+        # A single bad frame, or a single exception anywhere in the
+        # per-frame work, must cost that frame - not the rest of the
+        # mission. Each is counted and the run continues.
+        if not usable_frame(frame, height, width):
+            bad_frames += 1
+            frame_index += 1
 
-        detect_start = time.perf_counter()
+            if (args.max_frames and frame_index >= args.max_frames) or stop["requested"]:
+                break
 
-        boxes, scores, votes = detector(frame)
-
-        detect_times.append(time.perf_counter() - detect_start)
-
-        # Tracks are formed in the stabilised frame; see track_frame().
-        tracks, world_boxes = track_frame(
-            tracker, boxes, scores, frame, cumulative
-        )
+            continue
 
         records = []
 
-        for row, world_box in zip(tracks, world_boxes):
-            x1, y1, x2, y2 = row[:4]
-            track_id = int(row[4])
-            score = float(row[5])
+        try:
+            frame_start = time.perf_counter()
 
-            world = (
-                (world_box[0] + world_box[2]) / 2.0,
-                (world_box[1] + world_box[3]) / 2.0,
+            # Capture time: the shared local clock for a live stream with live
+            # telemetry, stream time otherwise.
+            if source_time is not None:
+                frame_time = source_time
+            elif live_clock:
+                frame_time = telemetry_mod.CLOCK()
+            else:
+                frame_time = frame_index / fps
+
+            if last_frame_time is not None:
+                interval = frame_time - last_frame_time
+                missed = missed_steps(interval, recent_intervals)
+                recent_intervals.append(interval)
+
+                if missed:
+                    bridge_gap(tracker, missed, frame)
+                    steps_bridged += missed
+
+            last_frame_time = frame_time
+
+            cumulative = (
+                ego.update(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+                if ego is not None
+                else None
             )
 
-            at_border = (
-                x1 <= args.border_margin
-                or y1 <= args.border_margin
-                or x2 >= width - args.border_margin
-                or y2 >= height - args.border_margin
+            if ego is not None and ego.status in ego_status_counts:
+                ego_status_counts[ego.status] += 1
+                clean_steps = clean_steps + 1 if ego.status == "ok" else 0
+
+            detect_start = time.perf_counter()
+
+            boxes, scores, votes = detector(frame)
+
+            detect_times.append(time.perf_counter() - detect_start)
+
+            # Tracks are formed in the stabilised frame; see track_frame().
+            tracks, world_boxes = track_frame(
+                tracker, boxes, scores, frame, cumulative
             )
 
-            movement.update(track_id, world, frame_index, at_border)
-            state, displacement = movement.state(track_id)
+            records = []
 
-            seen_tracks.add(track_id)
+            for row, world_box in zip(tracks, world_boxes):
+                x1, y1, x2, y2 = row[:4]
+                track_id = int(row[4])
+                score = float(row[5])
 
-            if state == "moving":
-                moving_tracks.add(track_id)
+                world = (
+                    (world_box[0] + world_box[2]) / 2.0,
+                    (world_box[1] + world_box[3]) / 2.0,
+                )
 
-            record = {
-                "track_id": track_id,
-                "box": [round(float(v), 1) for v in (x1, y1, x2, y2)],
-                "confidence": round(score, 4),
-                "state": state,
-                "displacement_px": round(float(displacement), 2),
-            }
+                at_border = (
+                    x1 <= args.border_margin
+                    or y1 <= args.border_margin
+                    or x2 >= width - args.border_margin
+                    or y2 >= height - args.border_margin
+                )
 
-            if camera is not None:
-                aircraft = telemetry.get(frame_index)
+                movement.update(track_id, world, frame_index, at_border, frame_time)
+                state, displacement = movement.state(track_id)
 
-                if aircraft is not None:
-                    fix = geolocate.locate_detection(
-                        camera, record["box"], aircraft
-                    )
+                if ego is not None and clean_steps < args.history:
+                    state = "unknown"
 
-                    record["ground"] = fix
+                seen_tracks.add(track_id)
 
-                    if fix is not None:
-                        located += 1
+                if state == "moving":
+                    moving_tracks.add(track_id)
 
-            records.append(record)
-
-        movement.prune(frame_index)
-
-        frame_times.append(time.perf_counter() - frame_start)
-
-        instant_fps = (
-            1.0 / frame_times[-1] if frame_times[-1] > 0 else 0.0
-        )
-
-        if stream is not None:
-            payload = {
-                "frame": frame_index,
-                "timestamp_s": round(frame_index / fps, 3),
-                "persons": len(records),
-                "detections": records,
-            }
-
-            aircraft = telemetry.get(frame_index)
-
-            if aircraft is not None:
-                payload["uav"] = {
-                    "lat": aircraft["lat"],
-                    "lon": aircraft["lon"],
-                    "altitude_m": aircraft["altitude_m"],
+                record = {
+                    "track_id": track_id,
+                    "box": [round(float(v), 1) for v in (x1, y1, x2, y2)],
+                    "confidence": round(score, 4),
+                    "state": state,
+                    "displacement_px": round(float(displacement), 2),
                 }
 
-            stream.write(json.dumps(payload) + "\n")
+                records.append(record)
 
-        if writer is not None or args.show:
-            annotated = annotate(
-                frame.copy(), records,
-                {
-                    "frame": frame_index,
-                    "persons": len(records),
-                    "moving": sum(
-                        1 for r in records if r["state"] == "moving"
-                    ),
-                    "fps": instant_fps,
-                    "conf": args.conf,
-                },
+            if frame_logger is not None:
+                frame_logger.consider(
+                    frame, frame_index, frame_time, boxes, scores,
+                    bool(unassociated_indices(tracks, len(boxes))),
+                )
+
+            if args.unassociated == "report":
+                for index in unassociated_indices(tracks, len(boxes)):
+                    x1, y1, x2, y2 = (float(v) for v in boxes[index])
+                    records.append({
+                        "track_id": -1,
+                        "box": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
+                        "confidence": round(float(scores[index]), 4),
+                        "state": "unknown",
+                    })
+
+            movement.prune(frame_index)
+
+            frame_times.append(time.perf_counter() - frame_start)
+
+            instant_fps = (
+                1.0 / frame_times[-1] if frame_times[-1] > 0 else 0.0
             )
 
-            if writer is not None:
-                writer.write(annotated)
+            pending.append((frame_time, {
+                "frame": frame_index,
+                "timestamp_s": round(
+                    frame_time - stream_start if live_clock else frame_time, 3
+                ),
+                "persons": len(records),
+                "detections": records,
+                **({"ego_motion": ego.status} if ego is not None else {}),
+            }))
 
-            if args.show:
-                cv2.imshow("payload", annotated)
+            flush()
 
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+            if writer is not None or args.show:
+                annotated = annotate(
+                    frame.copy(), records,
+                    {
+                        "frame": frame_index,
+                        "persons": len(records),
+                        "moving": sum(
+                            1 for r in records if r["state"] == "moving"
+                        ),
+                        "fps": instant_fps,
+                        "conf": args.conf,
+                    },
+                )
+
+                if writer is not None:
+                    writer.write(annotated)
+
+                if args.show:
+                    cv2.imshow("payload", annotated)
+
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+
+        except Exception as exc:  # noqa: BLE001 - the payload must outlive it
+            frame_errors += 1
+
+            if frame_errors <= 5:
+                print(f"frame {frame_index}: {type(exc).__name__}: {exc} "
+                      f"- skipped, run continues")
 
         if args.progress and frame_index % args.progress == 0:
             print(f"frame {frame_index:6d}  persons {len(records):3d}  "
@@ -953,6 +1408,9 @@ def main():
         if stop["requested"]:
             break
 
+    # Resolve whatever is still waiting for telemetry.
+    flush(final=True)
+
     elapsed = time.perf_counter() - started
 
     for sig, handler in previous_handlers:
@@ -965,7 +1423,16 @@ def main():
         writer.release()
 
     if stream is not None:
-        stream.close()
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+    if receiver is not None:
+        receiver.stop()
+
+    if frame_logger is not None:
+        frame_logger.close()
 
     if args.show:
         cv2.destroyAllWindows()
@@ -988,8 +1455,21 @@ def main():
         "unique_tracks": len(seen_tracks),
         "tracks_classified_moving": len(moving_tracks),
         "detections_geolocated": located,
+        "frames_without_valid_state": geoloc_refused,
+        "bad_frames_skipped": bad_frames,
+        "frame_errors": frame_errors,
+        "stream_failed": stream_failed,
+        "tracker_steps_bridged": steps_bridged,
+        "udp_sent": udp_sent if udp is not None else None,
+        "udp_errors": udp_errors if udp is not None else None,
+        "frames_logged": (
+            {"saved": frame_logger.saved, **frame_logger.reasons,
+             "failed": frame_logger.failed}
+            if frame_logger is not None else None
+        ),
         "ego_motion": ego is not None,
         "ego_motion_failures": ego.failures if ego is not None else None,
+        "ego_motion_status": ego_status_counts if ego is not None else None,
     }
 
     print()
