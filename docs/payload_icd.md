@@ -210,7 +210,7 @@ delimited, produced by `scripts/realtime_detect.py` and enriched by
 | `timestamp_s`      | float   | Seconds since stream start                 |
 | `persons`          | int     | Detections in this frame                   |
 | `uav`              | object/null | Aircraft state used for this frame's fixes; `null` when telemetry is configured but stale or missing, and then no fix is reported |
-| `ego_motion`       | enum    | `ok`, `predicted`, `lost`, `init` - health of the camera-motion estimate. Tracking runs in the stabilised frame, so anything but `ok` means identity and movement are degraded |
+| `ego_motion`       | enum    | `ok`, `telemetry`, `predicted`, `lost`, `init` - health of the camera-motion estimate. `telemetry`: flow failed or was overruled, and the aircraft's own motion was used. Tracking runs in the stabilised frame, so anything but `ok` means identity and movement are degraded |
 | `track_id`         | int     | Persistent identity; -1 if unassociated (reported by default; see below) |
 | `box`              | float[4]| Pixel box, x1 y1 x2 y2                     |
 | `confidence`       | float   | Detector confidence                        |

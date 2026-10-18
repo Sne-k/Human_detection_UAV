@@ -153,7 +153,8 @@ class EgoMotionEstimator:
     }
 
     def __init__(self, min_inliers=0, fallback="identity", max_predict=5,
-                 forward_backward=False, scale=1.0, max_corners=None):
+                 forward_backward=False, scale=1.0, max_corners=None,
+                 hint_tolerance_px=None):
         """
         min_inliers  RANSAC inliers a step needs to be trusted. 0 accepts any
                      model RANSAC returns, which was the original behaviour.
@@ -164,6 +165,11 @@ class EgoMotionEstimator:
                      since an aircraft's motion is smooth over a few frames.
         max_predict  consecutive untrusted steps to predict across before
                      declaring the estimate lost.
+        hint_tolerance_px
+                     with a telemetry-predicted step passed to update(), the
+                     largest disagreement, at the frame corners, a measured
+                     step may have with it and still be trusted. None never
+                     overrules flow; the hint is then only a fallback.
         """
 
         self.previous_gray = None
@@ -180,6 +186,8 @@ class EgoMotionEstimator:
             self.FEATURE_PARAMS = dict(self.FEATURE_PARAMS, maxCorners=max_corners)
         self.fallback = fallback
         self.max_predict = max_predict
+        self.hint_tolerance_px = hint_tolerance_px
+        self.hint_rejections = 0
 
         self.last_inliers = 0
         self.last_step = np.eye(3, dtype=np.float64)
@@ -187,6 +195,7 @@ class EgoMotionEstimator:
         self.consecutive_bad = 0
 
         # ok: measured. predicted: carried over from the last trusted step.
+        # telemetry: taken from the aircraft's own motion (task A5).
         # lost: no trustworthy estimate - movement states must be withheld.
         self.status = "init"
 
@@ -247,8 +256,24 @@ class EgoMotionEstimator:
 
         return affine, int(inliers.sum()) if inliers is not None else 0
 
-    def update(self, gray):
-        """Feed the next grayscale frame. Returns the 3x3 cumulative matrix."""
+    @staticmethod
+    def disagreement(step, other, width, height):
+        """Largest distance, over the frame's corners, between two steps."""
+
+        corners = np.array([[0, 0, 1], [width, 0, 1], [0, height, 1],
+                            [width, height, 1]], dtype=np.float64).T
+        return float(np.max(np.linalg.norm((step @ corners - other @ corners)[:2], axis=0)))
+
+    def update(self, gray, hint=None):
+        """
+        Feed the next grayscale frame. Returns the 3x3 cumulative matrix.
+
+        `hint` is the step telemetry predicts (geolocate.predict_step), when
+        the aircraft's state is known for both frames. Flow that fails is
+        replaced by it, and flow that disagrees with it by more than
+        hint_tolerance_px is overruled by it: a vision-only check cannot
+        catch flow that is confidently wrong, and an independent one can.
+        """
 
         if self.scale != 1.0:
             gray = cv2.resize(gray, None, fx=self.scale, fy=self.scale,
@@ -262,8 +287,9 @@ class EgoMotionEstimator:
         self.last_inliers = inliers
 
         step = np.eye(3, dtype=np.float64)
+        measured = affine is not None and inliers >= max(self.min_inliers, 1)
 
-        if affine is not None and inliers >= max(self.min_inliers, 1):
+        if measured:
             step[:2, :] = affine
 
             if self.scale != 1.0:
@@ -271,9 +297,26 @@ class EgoMotionEstimator:
                 # resolution: S^-1 A S, with S the resize.
                 s = np.diag([self.scale, self.scale, 1.0])
                 step = np.linalg.inv(s) @ step @ s
+
+            if (hint is not None and self.hint_tolerance_px is not None
+                    and self.disagreement(step, hint, gray.shape[1] / self.scale,
+                                          gray.shape[0] / self.scale)
+                    > self.hint_tolerance_px):
+                self.hint_rejections += 1
+                measured = False
+
+        if measured:
             self.last_good_step = step.copy()
             self.consecutive_bad = 0
             self.status = "ok"
+        elif hint is not None:
+            # The aircraft's own motion: no texture needed, and not a guess
+            # from the past - but carrying telemetry's error, so not "ok".
+            self.failures += 1
+            step = np.asarray(hint, dtype=np.float64).copy()
+            self.last_good_step = step.copy()
+            self.consecutive_bad = 0
+            self.status = "telemetry"
         else:
             self.failures += 1
             self.consecutive_bad += 1

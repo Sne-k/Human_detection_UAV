@@ -224,6 +224,101 @@ def project_to_ground(camera, px, py, altitude_m, roll_deg, pitch_deg, yaw_deg):
     return ground_east, ground_north, slant
 
 
+def ground_to_pixel(camera, east_m, north_m, altitude_m, roll_deg, pitch_deg, yaw_deg):
+    """
+    The pixel a ground point appears at - the inverse of project_to_ground.
+
+    east_m and north_m are relative to the point below the aircraft. Returns
+    (px, py), or None when the point is behind the camera.
+    """
+
+    roll, pitch = math.radians(roll_deg), math.radians(pitch_deg)
+    yaw = math.radians(yaw_deg) + camera.mount_yaw
+
+    # NED to body is the transpose of the body-to-NED matrix.
+    columns = [body_to_ned(axis, roll, pitch, yaw)
+               for axis in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+    ned = (north_m, east_m, altitude_m)
+    forward, right, down = (sum(c[i] * ned[i] for i in range(3)) for c in columns)
+
+    # Body to camera: the inverse of camera_to_body.
+    se, ce = math.sin(camera.mount_pitch), math.cos(camera.mount_pitch)
+    rx = right
+    ry = -se * forward + ce * down
+    rz = ce * forward + se * down
+
+    if rz <= 1e-9:
+        return None
+
+    nx = (rx / rz) / math.tan(camera.hfov / 2.0)
+    ny = (ry / rz) / math.tan(camera.vfov / 2.0)
+
+    return (nx + 1.0) * camera.width / 2.0, (ny + 1.0) * camera.height / 2.0
+
+
+def predict_step(camera, state0, state1):
+    """
+    The image motion between two frames that telemetry implies - task A5.
+
+    A 3x3 matrix mapping frame-0 pixels to frame-1 pixels, in the same form
+    as EgoMotionEstimator's step, or None if it cannot be formed. A grid of
+    frame-0 pixels is projected to the ground with frame 0's state and back
+    into frame 1 with frame 1's, and a similarity transform fitted - so
+    translation from ground speed, rotation from heading change, scale from
+    altitude change and the attitude-rate terms all come from the one camera
+    model whose conventions are checked in geolocation_sensitivity.py.
+
+    It needs no image texture, which is the point: over open water or snow
+    optical flow has nothing to measure.
+    """
+
+    import numpy as np
+
+    lat0, lon0 = state0["lat"], state0["lon"]
+    north_1 = math.radians(state1["lat"] - lat0) * EARTH_RADIUS_M
+    east_1 = (math.radians(state1["lon"] - lon0) * EARTH_RADIUS_M
+              * math.cos(math.radians(lat0)))
+
+    source, target = [], []
+
+    for fx in (0.2, 0.5, 0.8):
+        for fy in (0.2, 0.5, 0.8):
+            px, py = fx * camera.width, fy * camera.height
+            ground = project_to_ground(camera, px, py, state0["altitude_m"],
+                                       state0["roll_deg"], state0["pitch_deg"],
+                                       state0["yaw_deg"])
+
+            if ground is None:
+                continue
+
+            east, north, _ = ground
+            pixel = ground_to_pixel(camera, east - east_1, north - north_1,
+                                    state1["altitude_m"], state1["roll_deg"],
+                                    state1["pitch_deg"], state1["yaw_deg"])
+
+            if pixel is None:
+                continue
+
+            source.append((px, py))
+            target.append(pixel)
+
+    if len(source) < 3:
+        return None
+
+    import cv2
+
+    affine, _ = cv2.estimateAffinePartial2D(
+        np.array(source, np.float32), np.array(target, np.float32), method=cv2.LMEDS
+    )
+
+    if affine is None:
+        return None
+
+    step = np.eye(3)
+    step[:2, :] = affine
+    return step
+
+
 def offset_to_latlon(lat_deg, lon_deg, east_m, north_m):
     """Flat-earth offset from a reference latitude/longitude."""
 

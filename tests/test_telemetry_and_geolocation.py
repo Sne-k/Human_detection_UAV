@@ -237,3 +237,23 @@ def test_ground_point_follows_the_view_angle():
     assert geolocate.ground_point(nadir, box) == pytest.approx((306.0, 210.0))
     assert geolocate.ground_point(side, box) == pytest.approx((306.0, 220.0))
     assert 210.0 < geolocate.ground_point(oblique, box)[1] < 220.0
+
+
+def test_predicted_step_follows_the_conventions():
+    """Flying north moves the ground down the frame; descending zooms in;
+    the image-to-ground model and its inverse agree exactly."""
+
+    camera = geolocate.Camera(640, 512, 50.0)
+    state = {"lat": 12.97, "lon": 77.59, "altitude_m": 100.0,
+             "roll_deg": 0.0, "pitch_deg": 0.0, "yaw_deg": 0.0}
+
+    north = dict(state, lat=12.97 + math.degrees(2.914 / geolocate.EARTH_RADIUS_M))
+    step = geolocate.predict_step(camera, state, north)
+    assert step[1, 2] == pytest.approx(20.0, abs=0.1)
+    assert step[0, 2] == pytest.approx(0.0, abs=0.1)
+
+    lower = dict(state, altitude_m=90.0)
+    assert geolocate.predict_step(camera, state, lower)[0, 0] == pytest.approx(100 / 90, abs=1e-3)
+
+    e, n, _ = geolocate.project_to_ground(camera, 100, 400, 100.0, 5, -2, 40)
+    assert geolocate.ground_to_pixel(camera, e, n, 100.0, 5, -2, 40) == pytest.approx((100, 400))

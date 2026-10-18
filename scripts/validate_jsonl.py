@@ -25,7 +25,7 @@ STATES = {"moving", "stationary", "edge", "unknown"}
 
 FRAME_FIELDS = {"frame", "timestamp_s", "persons", "detections", "uav",
                 "ego_motion"}
-EGO_STATES = {"init", "ok", "predicted", "lost"}
+EGO_STATES = {"init", "ok", "telemetry", "predicted", "lost"}
 DETECTION_FIELDS = {"track_id", "box", "confidence", "state",
                     "displacement_px", "ground"}
 UAV_FIELDS = {"lat", "lon", "altitude_m", "state_age_s"}
