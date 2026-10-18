@@ -3,6 +3,7 @@ The runtime's geometry and post-processing: each test pins a property that a
 past bug violated, so the bug cannot come back unnoticed.
 """
 
+import cv2
 import numpy as np
 import pytest
 
@@ -331,3 +332,47 @@ def test_association_scale_never_reaches_the_output(monkeypatch):
 
     assert rows[0, :4] == pytest.approx([140.0, 200.0, 152.0, 219.0], abs=0.5)
     assert world[0] == pytest.approx([100.0, 200.0, 112.0, 219.0], abs=0.5)
+
+
+# ------------------------------------- telemetry-predicted motion (A5)
+
+def _texture(seed=0):
+    rng = np.random.default_rng(seed)
+    image = rng.integers(0, 255, (64, 80), dtype=np.uint8)
+    return cv2.resize(image, (640, 512), interpolation=cv2.INTER_CUBIC)
+
+
+def _shift(image, dy):
+    return np.roll(image, dy, axis=0)
+
+
+def test_telemetry_carries_motion_across_blank_ground():
+    from realtime_detect import EgoMotionEstimator
+
+    ego = EgoMotionEstimator(**payload.EGO_SETTINGS)
+    hint = np.eye(3)
+    hint[1, 2] = 20.0
+    ego.update(_texture())
+    ego.update(np.full((512, 640), 120, np.uint8), hint)
+
+    assert ego.status == "telemetry"
+    assert ego.last_step == pytest.approx(hint)
+
+
+def test_flow_that_contradicts_telemetry_is_overruled():
+    from realtime_detect import EgoMotionEstimator
+
+    image = _texture()
+    ego = EgoMotionEstimator(**payload.EGO_SETTINGS)
+    ego.update(image)
+
+    agree = np.eye(3)
+    agree[1, 2] = 20.0
+    ego.update(_shift(image, 20), agree)
+    assert ego.status == "ok"
+
+    wrong = np.eye(3)
+    wrong[1, 2] = 80.0
+    ego.update(_shift(image, 40), wrong)
+    assert ego.status == "telemetry"
+    assert ego.hint_rejections == 1

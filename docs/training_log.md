@@ -4058,3 +4058,89 @@ setting buys almost nothing. So the default stays 1.0, and
 `payload.py --assoc-scale 2.0` exists for a deliberate low-rate search
 configuration. Even without it, those walkers reach the map as unconfirmed
 detections (section 51) - with a position, without an identity.
+
+---
+
+## 55. Camera Motion From the Aircraft's Own State
+
+Optical flow needs texture. Section 50 found the limits of vision-only
+remedies over open water, snow and fog: prediction carries the last
+trusted step across a gap but has nothing to carry when the ground is
+featureless from the start, and some steps are confidently wrong in ways no
+vision-only check catches. The aircraft knows how it is moving, and since
+A1 the payload receives its state.
+
+`geolocate.predict_step` turns two states into the image motion between
+them. A grid of frame-0 pixels is projected to the ground with frame 0's
+state and back into frame 1 with frame 1's - through a new inverse,
+`ground_to_pixel` - and a similarity transform fitted. Translation from
+ground speed, rotation from heading change, scale from altitude change and
+the attitude-rate terms all come from the camera model whose conventions
+section 50 checked. Round trips are exact; flying 2.9 m north moves the
+ground 20.0 px down the frame; a 10 m descent from 100 m zooms 1.111x; a
+1 deg right roll shifts the image 12.5 px, the way the belly swings.
+
+`EgoMotionEstimator.update(gray, hint)` uses it two ways: as the fallback
+when flow fails, instead of repeating the last step; and as a check, so flow
+that disagrees with it by more than a tolerance at the frame corners is
+overruled. Such steps report `ego_motion: telemetry` - trusted for tracking,
+but not counted as clean for movement, since they carry telemetry's error.
+
+### Measured (`evaluate_motion_prior.py`)
+
+On the seed 0 mission (section 53), the telemetry step alone is wrong by
+7.7 px median, 13.3 px p95, 22.7 px worst at the frame corners - the
+simulator's drifting attitude error moves about 0.4 deg between frames,
+more than a real autopilot's smooth estimate. Stabilised-frame drift over
+the 601-frame pass:
+
+| Ground | Flow only (deployed) | Telemetry as fallback | + check, 10 px | + check, 20 px | + check, 40 px |
+|--------|------:|------:|------:|------:|------:|
+| Clear | 32 px | 32 px | 898 px | 77 px | 32 px |
+| Water mid-pass | 2,090 px | 1,809 px | 899 px | **139 px** | 1,866 px |
+| Water from start | 1,521 px | 1,363 px | 883 px | **180 px** | 1,327 px |
+| Patchy water | 1,822 px | 1,632 px | 1,159 px | **455 px** | 1,609 px |
+
+The water here is flat with independent sensor noise each frame, and flow
+reported most of it `ok` while wrong by up to 32 px - the forward-backward
+check does not catch consistent-looking matches in noise. As a fallback
+alone, telemetry barely helps, because flow rarely admits failure. As a
+check it does. 10 px is tighter than this telemetry's own error and
+overrules good flow; 40 px lets bad flow through; 20 px catches it and
+overrules one good step in 600 on clear ground.
+
+**Straight and level, it adds nothing end to end.** Flying the payload over
+the mission with 120 frames of water - background flattened, people kept,
+as people in the sea look to a thermal camera - found 19 of the 24 people
+in the stretch with and without the check. When the aircraft's motion does
+not change, repeating the last step is already right.
+
+**In a turn it is the difference.** A banked turn of 3 deg/frame with 20
+of 40 frames featureless, over 20 steep-view scenes, with telemetry error
+drawn from the residuals measured above:
+
+| | Drift at end, median | Worst | Worst step over water |
+|---|---:|---:|---:|
+| Flow only | 532 px | 550 px | 47 px |
+| With telemetry check (20 px) | **24 px** | 51 px | 14 px |
+
+Repeating the last step misses a heading that keeps changing; the
+aircraft's own state does not.
+
+On clear ground with the check deployed, the seed 0 mission scored
+identically to before - 176 of 185 found, 6 second identities, same
+position errors - with one step in 600 overruled.
+
+### Deployed, provisionally
+
+`EGO_SETTINGS["hint_tolerance_px"] = 20`, active only when telemetry is
+configured. The number is set against the simulator's telemetry; real
+attitude estimates are smoother between frames, which would allow a
+tighter, more sensitive check. Set it from flight logs: the distribution of
+disagreement between flow and telemetry over textured ground is the noise
+floor, and the tolerance belongs a margin above its tail.
+
+Live, the hint uses the state held at each frame's capture rather than the
+interpolated state the geolocation delay line waits for, so a step can lag
+the image by up to a telemetry period; during roll-in that is a few pixels,
+inside the tolerance.

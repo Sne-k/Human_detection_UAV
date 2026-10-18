@@ -613,12 +613,25 @@ def track_frame(tracker, boxes, scores, frame, cumulative=None):
 # about 3% of steps there are confidently wrong in ways no vision-only check
 # tried catches. That needs an independent motion reference from telemetry:
 # task A5.
+#   hint_tolerance_px 20
+#                    with telemetry, flow that disagrees with the motion the
+#                    aircraft's state implies by more than this, at the frame
+#                    corners, is overruled by it (task A5). Over synthetic
+#                    water, flow reported most steps "ok" while wrong by up
+#                    to 32 px, and the stabilised frame drifted 1,500-2,100
+#                    px over a pass; with the check, 139-455 px. 10 px
+#                    overruled good flow against the simulator's telemetry;
+#                    40 px missed bad flow. Provisional: the simulated
+#                    attitude error moves more between frames than a real
+#                    autopilot's, so set this from flight logs.
+#                    training_log.md section 55.
 EGO_SETTINGS = dict(
     min_inliers=1,
     fallback="predict",
     max_predict=30,
     forward_backward=True,
     max_corners=80,
+    hint_tolerance_px=20.0,
 )
 
 
@@ -1005,7 +1018,7 @@ def main():
     # not predicted or lost, for a whole history window: a window containing
     # a bad step cannot support a confident moving/stationary label.
     clean_steps = 0
-    ego_status_counts = {"ok": 0, "predicted": 0, "lost": 0}
+    ego_status_counts = {"ok": 0, "telemetry": 0, "predicted": 0, "lost": 0}
 
     movement = MovementTracker(
         history_frames=args.history,
@@ -1225,6 +1238,7 @@ def main():
         live_clock = True
 
     last_frame_time = None
+    previous_state = None
     recent_intervals = deque(maxlen=30)
     steps_bridged = 0
 
@@ -1269,8 +1283,21 @@ def main():
 
             last_frame_time = frame_time
 
+            # The image motion the aircraft's own state implies, when it is
+            # known for this frame and the last: a fallback for flow that
+            # fails, and a check on flow that is confidently wrong (A5).
+            hint = None
+
+            if ego is not None and state_buffer is not None and camera is not None:
+                state = state_buffer.at(frame_time)
+
+                if state is not None and previous_state is not None:
+                    hint = geolocate.predict_step(camera, previous_state, state)
+
+                previous_state = state
+
             cumulative = (
-                ego.update(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+                ego.update(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), hint)
                 if ego is not None
                 else None
             )
@@ -1469,6 +1496,7 @@ def main():
         ),
         "ego_motion": ego is not None,
         "ego_motion_failures": ego.failures if ego is not None else None,
+        "ego_motion_overruled": ego.hint_rejections if ego is not None else None,
         "ego_motion_status": ego_status_counts if ego is not None else None,
     }
 

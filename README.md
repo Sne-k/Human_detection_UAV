@@ -362,6 +362,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `evaluate_tracking_gate.py` | Scores what the payload actually emits, through tracking, on drifting sequences with exact truth |
 | `evaluate_frame_drops.py` | Movement labels and track identity when frames are lost - one in k, random, bursts |
 | `evaluate_tracker_stress.py` | Identity under stress: walkers, crossings, turns, descents, search-mode rates |
+| `evaluate_motion_prior.py` | Camera motion from telemetry over featureless water, straight and turning |
 | `simulate_mission.py` | Whole chain over geo-referenced real imagery: people found, false targets, position error vs reported uncertainty |
 
 ### Dataset preparation
