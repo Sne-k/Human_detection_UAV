@@ -53,7 +53,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import torch
 
 PROJECT_ROOT = Path(
     os.environ.get("HDU_ROOT", Path(__file__).resolve().parents[1])
@@ -176,18 +175,62 @@ def letterbox(image, shape):
     return canvas
 
 
+# Most boxes Ultralytics keeps per image after NMS; the ONNX path matches it.
+MAX_DET = 300
+
+
+def nms(boxes, scores, iou):
+    """Greedy NMS, highest score first. Returns kept indices in that order."""
+
+    order = np.argsort(-scores, kind="stable")
+    keep = []
+
+    while len(order):
+        i = order[0]
+        keep.append(i)
+
+        if len(order) == 1:
+            break
+
+        rest = order[1:]
+        x1 = np.maximum(boxes[i, 0], boxes[rest, 0])
+        y1 = np.maximum(boxes[i, 1], boxes[rest, 1])
+        x2 = np.minimum(boxes[i, 2], boxes[rest, 2])
+        y2 = np.minimum(boxes[i, 3], boxes[rest, 3])
+        inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+        area_i = (boxes[i, 2] - boxes[i, 0]) * (boxes[i, 3] - boxes[i, 1])
+        area_r = (boxes[rest, 2] - boxes[rest, 0]) * (boxes[rest, 3] - boxes[rest, 1])
+        overlap = inter / np.maximum(area_i + area_r - inter, 1e-9)
+        order = rest[overlap <= iou]
+
+    return np.array(keep, dtype=int)
+
+
 class Detector:
     """
     One or more YOLO models behind a single interface.
 
     Returns boxes in original-frame pixel coordinates with confidences, so a
     single model and an ensemble are interchangeable downstream.
+
+    Two backends compute the same thing. "torch" runs the .pt weights through
+    Ultralytics. "onnx" runs the exported .onnx through ONNX Runtime and
+    decodes it here - the same threshold, NMS and box cap Ultralytics applies
+    - which is the engine every companion-computer frame rate in this project
+    was measured with, and usually the faster one on an ARM CPU. Parity is
+    pinned by tests/test_onnx_backend.py.
     """
 
     def __init__(self, names, device, conf=CONF, fuse_iou=FUSE_IOU,
                  explicit_weights=None, shape_override=None, classes=None,
-                 single_fuse_iou=SINGLE_MODEL_FUSE_IOU):
-        from ultralytics import YOLO
+                 single_fuse_iou=SINGLE_MODEL_FUSE_IOU, backend="torch",
+                 threads=None):
+        self.backend = backend
+
+        if backend == "torch":
+            from ultralytics import YOLO
+        elif backend != "onnx":
+            raise ValueError(f"unknown backend {backend!r}")
 
         self.conf = conf
         self.fuse_iou = fuse_iou
@@ -219,8 +262,27 @@ class Detector:
 
             shape = shape_override or MODEL_SHAPES.get(name, (512, 640))
 
-            model = YOLO(str(weights))
-            model.model.to(device).eval()
+            if backend == "onnx":
+                import onnxruntime as ort
+
+                weights = weights.with_suffix(".onnx")
+
+                if not weights.exists():
+                    raise SystemExit(f"ONNX weights not found: {weights} "
+                                     f"(scripts/export_models.py makes them)")
+
+                options = ort.SessionOptions()
+                options.intra_op_num_threads = threads or min(4, os.cpu_count() or 4)
+                model = ort.InferenceSession(str(weights), options,
+                                             providers=["CPUExecutionProvider"])
+                input_shape = model.get_inputs()[0].shape[2:]
+
+                if list(input_shape) != list(shape):
+                    raise SystemExit(f"{weights} was exported at {input_shape}, "
+                                     f"expected {list(shape)}")
+            else:
+                model = YOLO(str(weights))
+                model.model.to(device).eval()
 
             self.models.append({
                 "name": name,
@@ -228,7 +290,7 @@ class Detector:
                 "model": model,
             })
 
-            print(f"  loaded {name} @ {shape[1]}x{shape[0]}")
+            print(f"  loaded {name} @ {shape[1]}x{shape[0]} ({backend})")
 
         self.ensemble = len(self.models) > 1
         self.single_fuse_iou = single_fuse_iou
@@ -259,23 +321,31 @@ class Detector:
 
         for entry in self.models:
             padded = letterbox(frame, entry["shape"])
+            iou = NMS_IOU if self.ensemble else SINGLE_MODEL_NMS_IOU
 
-            result = entry["model"].predict(
-                padded,
-                imgsz=list(entry["shape"]),
-                conf=self.conf,
-                iou=NMS_IOU if self.ensemble else SINGLE_MODEL_NMS_IOU,
-                device=self.device,
-                classes=self.classes,
-                verbose=False,
-            )[0]
+            if self.backend == "onnx":
+                xyxy, conf = self._onnx_predict(entry["model"], padded, iou)
+            else:
+                result = entry["model"].predict(
+                    padded,
+                    imgsz=list(entry["shape"]),
+                    conf=self.conf,
+                    iou=iou,
+                    device=self.device,
+                    classes=self.classes,
+                    verbose=False,
+                )[0]
 
-            boxes = result.boxes
+                boxes = result.boxes
 
-            if boxes is None or len(boxes) == 0:
+                if boxes is None or len(boxes) == 0:
+                    continue
+
+                xyxy = boxes.xyxy.cpu().numpy()
+                conf = boxes.conf.cpu().numpy()
+
+            if not len(xyxy):
                 continue
-
-            xyxy = boxes.xyxy.cpu().numpy()
 
             # Undo the letterbox with the geometry that produced it, so the
             # forward and inverse transforms cannot disagree.
@@ -290,7 +360,7 @@ class Detector:
             xyxy[:, [1, 3]] = xyxy[:, [1, 3]].clip(0, height)
 
             pooled_boxes.append(xyxy)
-            pooled_scores.append(boxes.conf.cpu().numpy())
+            pooled_scores.append(conf)
             sources.extend([entry["name"]] * len(xyxy))
 
         if not pooled_boxes:
@@ -301,6 +371,38 @@ class Detector:
             np.concatenate(pooled_scores),
             sources,
         )
+
+    def _onnx_predict(self, session, padded, iou):
+        """
+        What Ultralytics' predict returns, from the raw ONNX head.
+
+        The graph takes RGB in [0, 1], NCHW, and returns (1, 4 + classes, N):
+        centre-size boxes and a score per class. Kept: score strictly above
+        the threshold, NMS at `iou`, at most MAX_DET boxes by score.
+        """
+
+        x = np.ascontiguousarray(padded[:, :, ::-1].transpose(2, 0, 1))[None]
+        x = x.astype(np.float32) / 255.0
+        out = session.run(None, {session.get_inputs()[0].name: x})[0][0]
+
+        class_scores = out[4:]
+        cls = class_scores.argmax(axis=0)
+        scores = class_scores[cls, np.arange(out.shape[1])]
+        keep = scores > self.conf
+
+        if self.classes is not None:
+            keep &= np.isin(cls, self.classes)
+
+        if not keep.any():
+            return np.zeros((0, 4)), np.zeros(0)
+
+        cx, cy, w, h = out[:4, keep]
+        boxes = np.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], axis=1)
+        scores = scores[keep]
+
+        kept = nms(boxes, scores, iou)[:MAX_DET]
+
+        return boxes[kept].astype(np.float64), scores[kept].astype(np.float64)
 
     def fuse(self, boxes, scores, sources):
         """Cluster and fuse, with the rule each configuration was measured with."""
@@ -635,10 +737,19 @@ EGO_SETTINGS = dict(
 )
 
 
-def make_ego_estimator():
+def make_ego_estimator(scale=1.0):
+    """
+    The deployed estimator. `scale` runs flow on a resized frame: at 0.5 it
+    costs 7.3 ms against 18.5 ms per 640 x 512 frame on the development CPU,
+    with per-step error rising from 0.06 to 0.15 px (p95) and drift over a
+    600-frame pass from 32 to 135 px - about 3 px across a movement window,
+    against the 15 px threshold. For a slow companion computer, if ego-motion
+    is what limits the frame rate (training_log section 56).
+    """
+
     from realtime_detect import EgoMotionEstimator
 
-    return EgoMotionEstimator(**EGO_SETTINGS)
+    return EgoMotionEstimator(**dict(EGO_SETTINGS, scale=scale))
 
 
 class FrameLogger:
@@ -921,6 +1032,19 @@ def main():
              "only. See training_log.md section 51.",
     )
     parser.add_argument("--device", default=0)
+    parser.add_argument(
+        "--backend",
+        choices=["auto", "torch", "onnx"],
+        default="auto",
+        help="Detector engine. auto: ONNX Runtime with --device cpu (the "
+             "companion computer), PyTorch otherwise. Same boxes either way.",
+    )
+    parser.add_argument("--ego-scale", type=float, default=1.0,
+                        help="Run camera-motion estimation on a frame resized "
+                             "by this factor. 0.5 is 2.5x cheaper; see "
+                             "make_ego_estimator for what it costs in accuracy.")
+    parser.add_argument("--threads", type=int, default=None,
+                        help="ONNX Runtime threads (default: up to 4 cores)")
 
     parser.add_argument(
         "--mavlink",
@@ -985,12 +1109,29 @@ def main():
     print(f"payload: {' + '.join(names)}"
           f"{'  (ensemble, WBF)' if len(names) > 1 else ''}")
 
-    detector = Detector(
-        names, device, conf=args.conf,
-        explicit_weights=args.weights,
-        shape_override=tuple(args.imgsz) if args.imgsz else None,
-        classes=args.classes,
-    )
+    # ONNX Runtime on a CPU - the companion computer's case - and PyTorch
+    # where there is a GPU. Identical output; see Detector.
+    backend = args.backend
+    if backend == "auto":
+        backend = "onnx" if str(device).lower() == "cpu" else "torch"
+
+    def make_detector(engine):
+        return Detector(
+            names, device, conf=args.conf,
+            explicit_weights=args.weights,
+            shape_override=tuple(args.imgsz) if args.imgsz else None,
+            classes=args.classes,
+            backend=engine,
+            threads=args.threads,
+        )
+
+    try:
+        detector = make_detector(backend)
+    except SystemExit as missing:
+        if args.backend != "auto" or backend != "onnx":
+            raise
+        print(f"note: {missing} - using PyTorch")
+        detector = make_detector("torch")
 
     frames, fps, (width, height), total = open_source(args.source)
 
@@ -1012,7 +1153,7 @@ def main():
         print("         (about 20 px/frame); expect almost no output from a")
         print("         moving aircraft. Fine for a static camera or webcam.")
 
-    ego = None if args.no_ego_motion else make_ego_estimator()
+    ego = None if args.no_ego_motion else make_ego_estimator(args.ego_scale)
 
     # Movement state is withheld until the motion estimate has been measured,
     # not predicted or lost, for a whole history window: a window containing

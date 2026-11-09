@@ -41,6 +41,8 @@ TRAINING = PROJECT_ROOT / "runs" / "detect" / "results" / "training"
 DATASET = PROJECT_ROOT / "dataset" / "hit_uav_person"
 RESULTS = PROJECT_ROOT / "results"
 
+BENCHMARK_FRAMES = 210
+
 # Measurements that justify the release, copied in if present.
 EVIDENCE = [
     "deployed_config/deployed_config.json",
@@ -126,6 +128,35 @@ def build(name, model):
     for dest, src in files.items():
         (out / dest).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, out / dest)
+
+    # A 640 x 512 clip with matching telemetry, for benchmark_pi.py on the
+    # companion computer: 30 s of the simulated mission, so the board is
+    # timed on the sensor's frame size and real imagery.
+    mission = RESULTS / "mission" / "seed0_tiles24"
+    if (mission / "mission.mp4").exists():
+        import cv2
+
+        (out / "benchmark").mkdir()
+        capture = cv2.VideoCapture(str(mission / "mission.mp4"))
+        fps = capture.get(cv2.CAP_PROP_FPS) or 7.0
+        writer = None
+
+        for _ in range(BENCHMARK_FRAMES):
+            ok, frame = capture.read()
+            if not ok:
+                break
+            if writer is None:
+                writer = cv2.VideoWriter(str(out / "benchmark" / "clip.mp4"),
+                                         cv2.VideoWriter_fourcc(*"mp4v"), fps,
+                                         (frame.shape[1], frame.shape[0]))
+            writer.write(frame)
+
+        writer.release()
+        lines = (mission / "telemetry.jsonl").read_text(encoding="utf-8").splitlines()
+        (out / "benchmark" / "telemetry.jsonl").write_text(
+            "\n".join(lines[:BENCHMARK_FRAMES]) + "\n", encoding="utf-8")
+        files["benchmark/clip.mp4"] = out / "benchmark" / "clip.mp4"
+        files["benchmark/telemetry.jsonl"] = out / "benchmark" / "telemetry.jsonl"
 
     runtime = {
         "model": model,

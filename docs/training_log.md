@@ -4144,3 +4144,52 @@ Live, the hint uses the state held at each frame's capture rather than the
 interpolated state the geolocation delay line waits for, so a step can lag
 the image by up to a telemetry period; during roll-in that is a few pixels,
 inside the tolerance.
+
+---
+
+## 56. The Board Is a Raspberry Pi 4
+
+The companion computer bought is a Raspberry Pi 4 Model B with 8 GB - four
+Cortex-A72 cores at 1.8 GHz - not the Pi 5 every estimate so far assumed.
+Memory is a non-issue: 150 MB measured against 8 GB. Compute is roughly two
+to three times slower per core than a Pi 5.
+
+### Re-derived budget
+
+The whole payload, measured on the development CPU over 640 x 512 mission
+frames with telemetry: 70 ms per frame; 60 ms with camera motion at half
+scale. At 6-15x for a Pi 4, that is **1.0-2.4 FPS** (1.1-2.8 with half-scale
+camera motion). Coverage clears at every altitude, three-frame confirmation
+clears at 100 m and above and is marginal at 60 m, and the 15-frame movement
+window fails everywhere. The mission is detect-and-report at 100 m or above,
+with movement labels where the frame-drop rules of section 52 allow them.
+`deployment_target.md` section 3g has the table.
+
+### What changed for it
+
+**The payload was not running the engine it was budgeted on.** Every
+companion-computer estimate in this project was measured with ONNX Runtime,
+but the payload's detector ran the `.pt` weights through PyTorch even on a
+CPU. It now has an ONNX Runtime backend that decodes the raw head itself -
+the same strict score threshold, NMS and 300-box cap Ultralytics applies -
+selected automatically with `--device cpu`. On 97 test images at both
+operating points it returns the same boxes and scores to 0.000 px and
+0.0000, and it is 20 % faster on the development CPU (41.6 ms against 53.0
+ms). PyTorch is still needed on the board, for the tracker.
+
+**Camera motion at half scale.** `--ego-scale 0.5` runs flow on a half-size
+frame: 7.3 ms instead of 18.5 ms per frame on the development CPU, per-step
+error 0.15 px instead of 0.06 (p95), drift over a 600-frame pass 135 px
+instead of 32 - about 3 px across a movement window. Off by default; the
+board decides.
+
+**A measurement ready to run.** `benchmark_pi.py` times the detector on both
+engines, camera motion at both scales and the whole payload, records the
+SoC temperature and the firmware's throttling flags, and checks the measured
+rate against the mission. The release package now carries a 30 s, 640 x 512
+benchmark clip with telemetry, so one folder copied to the Pi holds
+everything. `docs/raspberry_pi_setup.md` is the procedure.
+
+**No accelerator path.** The Hailo AI HAT+ held in reserve needs a Pi 5's
+PCIe connector, and a Coral USB accelerator needs a fully integer model -
+which cost 406 people in section 35. The remaining levers are software.

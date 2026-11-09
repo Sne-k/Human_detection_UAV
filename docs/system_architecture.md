@@ -102,7 +102,7 @@ Solid boxes are implemented and validated. Dashed boxes are planned.
 | Geo-referencing      | Implemented | Pixel detection -> ground lat/lon + error estimate  |
 | Latency benchmark    | Implemented | `scripts/benchmark_latency.py`                     |
 | Model export         | Implemented | ONNX, verified exact at the native 512 x 640 shape |
-| Companion computer   | Selected    | Raspberry Pi 5 class; not yet procured or measured |
+| Companion computer   | Procured    | Raspberry Pi 4 Model B, 8 GB; to be measured (`benchmark_pi.py`) |
 | Payload integration  | Planned     | Ground-station link consuming the JSONL stream     |
 
 ---

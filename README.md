@@ -242,6 +242,11 @@ what reaches the ground station - or score any stream against it:
 python scripts/simulate_mission.py --monte-carlo 200
 ```
 
+The companion computer is a **Raspberry Pi 4 Model B, 8 GB**.
+[`docs/raspberry_pi_setup.md`](docs/raspberry_pi_setup.md) sets it up and
+measures the payload on it; `deployment_target.md` section 3g estimates what
+to expect - about 1-2.4 FPS, enough for detect-and-report at 100 m and above.
+
 Check the output against the interface contract, and run the tests:
 
 ```bash
@@ -363,6 +368,7 @@ Git worktree while datasets live in the main checkout, set `HDU_ROOT`.
 | `evaluate_frame_drops.py` | Movement labels and track identity when frames are lost - one in k, random, bursts |
 | `evaluate_tracker_stress.py` | Identity under stress: walkers, crossings, turns, descents, search-mode rates |
 | `evaluate_motion_prior.py` | Camera motion from telemetry over featureless water, straight and turning |
+| `benchmark_pi.py` | Times every stage and the whole payload on the companion computer, with temperature and throttling |
 | `simulate_mission.py` | Whole chain over geo-referenced real imagery: people found, false targets, position error vs reported uncertainty |
 
 ### Dataset preparation

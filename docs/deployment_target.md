@@ -70,14 +70,15 @@ does not command the aircraft.
 
 ## 2. Hardware Candidates
 
-**The companion computer is not yet decided.** A Raspberry Pi 5 class board is
-the leading candidate under budget constraints, with a Jetson considered and
-set aside on cost, but nothing is committed and no hardware has been bought.
+**Decided: Raspberry Pi 4 Model B, 8 GB** - see section 3g, which re-derives
+the frame-rate budget for it. Sections 3 to 3f were written while a Pi 5 was
+the front-runner and estimate for that board; they are kept as the analysis
+the decision was made against.
 
 | Component          | Status                                          |
 | ------------------ | ----------------------------------------------- |
 | Flight controller  | Pixhawk-class, separate from vision             |
-| Companion computer | **Undecided** - Pi 5 class is the front-runner  |
+| Companion computer | **Raspberry Pi 4 Model B, 8 GB** - procured     |
 | AI accelerator     | Undecided, needed only if the board falls short |
 | RGB camera         | Not purchased                                   |
 | Thermal camera     | Low-resolution LWIR, not purchased              |
@@ -436,6 +437,75 @@ are trained; changes that touch only training - losses, augmentation,
 datasets, schedules - are free at inference and do not.** Every experiment
 from MT-005 to MT-010 was the second kind, which is why the deployed cost has
 never moved.
+
+
+---
+
+## 3g. The Board Bought: Raspberry Pi 4 Model B, 8 GB
+
+**Decided.** The companion computer is a Raspberry Pi 4 Model B with 8 GB:
+Broadcom BCM2711, four Cortex-A72 cores at 1.8 GHz, no accelerator. Every
+estimate above was for a Pi 5, which this is not.
+
+**Memory is settled.** The payload measured 150 MB resident with one model
+(section 3c); 8 GB leaves room for PyTorch, which the tracker needs, and for
+anything else on the board.
+
+**Compute is the question.** The Pi 5's Cortex-A76 at 2.4 GHz is roughly two
+to three times faster than the Pi 4's A72 at 1.8 GHz, so the 3-5x
+development-CPU-to-Pi-5 factor becomes about **6-15x** to a Pi 4. Applied to
+the whole payload measured on the development CPU with ONNX Runtime (70 ms
+per 640 x 512 frame with telemetry, `benchmark_pi.py`):
+
+| Configuration | Dev CPU | Pi 4 estimate | Pi 4 FPS |
+|---------------|--------:|---------------|----------|
+| Payload | 70 ms | 0.42 - 1.05 s | **1.0 - 2.4** |
+| Payload, camera motion at half scale | 60 ms | 0.36 - 0.91 s | **1.1 - 2.8** |
+
+Against the mission (section 3b):
+
+| Altitude | Coverage | Confirm (3 frames) | Tracking (15 frames) |
+|---------:|---------:|-------------------:|---------------------:|
+| 60 m | 0.64 - clears | 1.34 - marginal | 6.70 - **fails** |
+| 80 m | 0.48 - clears | 1.01 - at the low end | 5.03 - **fails** |
+| 100 m | 0.38 - clears | 0.80 - clears | 4.02 - **fails** |
+| 130 m | 0.29 - clears | 0.62 - clears | 3.09 - **fails** |
+
+**What this means for the mission.**
+
+1. **Detect-and-report, at 100 m or above.** Finding people and reporting
+   where they are clears with margin; that is the part that saves lives, and
+   the detector was trained on 60-130 m imagery. At 60 m even confirmation is
+   marginal.
+2. **Movement is reported when it can be, not continuously.** The 15-frame
+   window needs 6.7 FPS at 60 m. At 1-2.4 FPS the payload still labels a
+   still person `stationary` once their history spans two seconds (section
+   52), and a walker `moving` once they cross the threshold; between those,
+   `unknown`. That is the behaviour the frame-drop work built.
+3. **Below about 2 FPS, walkers are hard to track.** Section 54 measured
+   that at 1.4 FPS only 33 of 120 walkers became confirmed tracks;
+   `--assoc-scale 2.0` raised it to 71 at five times the identity swaps.
+   They are reported either way, as unconfirmed detections. Whether to set
+   it depends on the measured frame rate.
+4. **No accelerator path to speak of.** The Hailo AI HAT+ that section 4
+   held in reserve fits the Pi 5's PCIe connector, not a Pi 4. A Coral USB
+   accelerator needs a fully integer model, and full INT8 cost 406 people
+   (section 4). If more speed is needed, the levers are software: half-scale
+   camera motion (measured: 2.5x cheaper), NCNN instead of ONNX Runtime
+   (untried), or a smaller input at a recall cost.
+
+**Changes made for this board.** The payload's detector used to run through
+PyTorch even on a CPU, while every frame rate here was measured with ONNX
+Runtime. It now has an ONNX Runtime backend, selected automatically with
+`--device cpu`; on 97 test images it returns exactly the same boxes and
+scores as PyTorch, and runs 20 % faster on the development CPU (41.6 against
+53.0 ms). `--ego-scale` runs camera-motion estimation on a reduced frame.
+
+**The estimate above is still an estimate.** `docs/raspberry_pi_setup.md`
+sets the board up and runs `scripts/benchmark_pi.py`, which times every stage
+and the whole payload on the Pi, records temperature and throttling, and says
+which requirements the measured rate meets. That measurement replaces this
+section.
 
 ---
 

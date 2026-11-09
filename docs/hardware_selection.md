@@ -8,7 +8,12 @@ Every requirement here is derived from a measurement in this repository rather
 than from a specification sheet, and each row names the script that produced
 it.
 
-**Nothing has been purchased.** This is the basis for that decision.
+**Update:** the companion computer bought is a **Raspberry Pi 4 Model B,
+8 GB**, not the Pi 5 recommended below. `deployment_target.md` section 3g
+re-derives the budget for it: about 1-2.4 FPS for the whole payload, enough
+for detect-and-report at 100 m and above, not for continuous movement
+classification. The Pi 5 analysis below is kept as the record of the trade
+study.
 
 ---
 
@@ -191,7 +196,7 @@ for delivery confirmation regardless of whether it runs a detector.
 
 | Component | Selection | Confidence | Blocking |
 | --------- | --------- | ---------- | -------- |
-| Companion computer | Raspberry Pi 5 4 GB + Active Cooler | Medium | Confirm on hardware |
+| Companion computer | **Raspberry Pi 4 Model B 8 GB** (bought; Pi 5 was recommended) | - | Measure: `benchmark_pi.py` |
 | Thermal camera | >= 384 x 288, prefer 640 x 512 | **High** | Budget |
 | RGB camera | Any 1080p, no AI in this phase | High | None |
 | Storage | NVMe via M.2 HAT | High | None |
