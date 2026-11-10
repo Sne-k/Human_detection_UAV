@@ -181,6 +181,9 @@ def main():
     parser.add_argument("--device", default="cpu",
                         help="cpu matches the target board; 0 uses the GPU")
     parser.add_argument("--no-show", action="store_true")
+    parser.add_argument("--threads", type=int, default=None,
+                        help="Inference threads; match any core restriction, "
+                             "e.g. 2 under taskset -c 0,1 on a Raspberry Pi")
 
     args = parser.parse_args()
 
@@ -247,6 +250,9 @@ def main():
 
     if not args.no_show:
         argv += ["--show"]
+
+    if args.threads:
+        argv += ["--threads", str(args.threads)]
 
     if args.jsonl:
         argv += ["--jsonl", args.jsonl]
