@@ -175,6 +175,49 @@ def letterbox(image, shape):
     return canvas
 
 
+def trained_shape(weights):
+    """
+    The (h, w) input a set of weights was trained or exported at, or None.
+
+    Read from the ONNX export beside the weights if there is one, otherwise
+    from the training arguments saved in the checkpoint. --weights used to
+    default to 640 x 480, a webcam size, so the deployed thermal model passed
+    by path - as on the companion computer - ran letterboxed into the wrong
+    shape, and its ONNX export was rejected for it, silently falling back to
+    PyTorch at half the speed (training_log section 57).
+    """
+
+    weights = Path(weights)
+    onnx_path = weights.with_suffix(".onnx")
+
+    if onnx_path.exists():
+        try:
+            import onnxruntime as ort
+
+            session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+            shape = session.get_inputs()[0].shape[2:]
+
+            if all(isinstance(v, int) for v in shape):
+                return tuple(shape)
+        except Exception:
+            pass
+
+    try:
+        import torch
+
+        checkpoint = torch.load(str(weights), map_location="cpu", weights_only=False)
+        imgsz = (checkpoint.get("train_args") or {}).get("imgsz")
+
+        if isinstance(imgsz, int):
+            return (imgsz, imgsz)
+        if isinstance(imgsz, (list, tuple)) and len(imgsz) == 2:
+            return tuple(imgsz)
+    except Exception:
+        pass
+
+    return None
+
+
 # Most boxes Ultralytics keeps per image after NMS; the ONNX path matches it.
 MAX_DET = 300
 
@@ -1091,7 +1134,8 @@ def main():
         names = [Path(args.weights).stem]
 
         if args.imgsz is None:
-            args.imgsz = [480, 640]
+            args.imgsz = list(trained_shape(args.weights) or (480, 640))
+            print(f"input:   {args.imgsz[1]}x{args.imgsz[0]} (from the weights)")
 
         print("NOTE: running arbitrary weights. This exercises the pipeline;")
         print("      it is not a validation of the project's detectors.")

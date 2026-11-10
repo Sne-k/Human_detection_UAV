@@ -28,12 +28,26 @@ git clone https://github.com/Sne-k/Human_detection_UAV.git
 cd Human_detection_UAV
 python3 -m venv venv
 . venv/bin/activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install numpy opencv-python-headless onnxruntime pymavlink ultralytics
+pip uninstall -y opencv-python
+pip install --no-deps --force-reinstall opencv-python-headless
 ```
 
-`ultralytics` brings PyTorch with it. The detector itself runs on ONNX
-Runtime, but the tracker (ByteTrack) comes from Ultralytics, so PyTorch must
-be installed; with 8 GB of memory that costs nothing that matters.
+Three things this order avoids, all met on the first install:
+
+- **PyTorch from its CPU index first.** On aarch64, PyPI's default PyTorch is
+  the CUDA build and downloads gigabytes of NVIDIA libraries the Pi cannot
+  use. The detector runs on ONNX Runtime, but the tracker (ByteTrack) comes
+  from Ultralytics, so PyTorch must be installed.
+- **Headless OpenCV only.** Ultralytics pulls in the desktop `opencv-python`,
+  which needs `libGL` - absent on Raspberry Pi OS Lite - and shadows the
+  headless build. `pip check` will then say Ultralytics wants
+  `opencv-python`; that is expected and harmless.
+- **Power.** On a weak supply, a brownout mid-install leaves half-written
+  packages that fail later with confusing import errors. If you must install
+  on weak power, run pip on one core: `taskset -c 0 nice -n 19 pip install
+  --no-compile ...`
 
 ## 3. Weights
 
@@ -65,6 +79,13 @@ says which mission requirements the measured frame rate meets. Bring back
 
 For a thermal soak, run it three times back to back and compare the last run
 with the first.
+
+On a supply that cannot carry four cores, measure on two, with the thread
+count matched to the cores (the first measurement, training_log section 57):
+
+```bash
+OMP_NUM_THREADS=2 taskset -c 0,1 python scripts/benchmark_pi.py --weights release/weights/best.pt --clip release/benchmark/clip.mp4 --telemetry release/benchmark/telemetry.jsonl --threads 2
+```
 
 ## 5. Run
 

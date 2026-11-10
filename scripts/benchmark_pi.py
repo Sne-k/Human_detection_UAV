@@ -144,12 +144,21 @@ def main():
     parser.add_argument("--telemetry", default=None)
     parser.add_argument("--frames", type=int, default=120)
     parser.add_argument("--torch", action="store_true", help="also time the PyTorch backend")
+    parser.add_argument("--threads", type=int, default=None,
+                        help="Inference threads. Set to match any CPU restriction "
+                             "(e.g. taskset -c 0,1 with --threads 2), or ONNX Runtime "
+                             "oversubscribes the cores it has")
     parser.add_argument("--output", default="benchmark_pi.json")
     args = parser.parse_args()
 
     import payload
 
-    result = {"system": system(), "temperature_start_c": temperature_c(),
+    if args.threads:
+        import torch
+        torch.set_num_threads(args.threads)
+
+    result = {"system": system(), "threads": args.threads,
+              "temperature_start_c": temperature_c(),
               "throttled_start": throttled(), "stages": {}}
     print(json.dumps(result["system"], indent=2))
 
@@ -163,7 +172,8 @@ def main():
     for backend in backends:
         with contextlib.redirect_stdout(io.StringIO()):
             detector = payload.Detector([payload.DEFAULT_THERMAL], device="cpu",
-                                        explicit_weights=args.weights, backend=backend)
+                                        explicit_weights=args.weights, backend=backend,
+                                        threads=args.threads)
         result["stages"][f"detector_{backend}"] = time_stage(detector, frames)
         print(f"detector ({backend}):   {result['stages'][f'detector_{backend}']}")
 
@@ -183,6 +193,8 @@ def main():
                     "--summary", str(summary_path), "--progress", "100000", *extra]
         if args.telemetry:
             sys.argv += ["--telemetry", args.telemetry]
+        if args.threads:
+            sys.argv += ["--threads", str(args.threads)]
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 payload.main()

@@ -41,3 +41,13 @@ def test_onnx_and_torch_detectors_agree(conf):
         order_a, order_b = np.argsort(-a_scores), np.argsort(-b_scores)
         assert b_boxes[order_b] == pytest.approx(a_boxes[order_a], abs=0.05)
         assert b_scores[order_b] == pytest.approx(a_scores[order_a], abs=1e-3)
+
+
+@needs_artifacts
+@pytest.mark.skipif(not ONNX.exists(), reason="needs the exported best.onnx")
+def test_weights_passed_by_path_run_at_their_trained_size():
+    """--weights used to default to 640 x 480, so the deployed model given
+    by path ran letterboxed into the wrong shape and fell back to PyTorch
+    (training_log section 57)."""
+
+    assert payload.trained_shape(ONNX.with_suffix(".pt")) == (512, 640)

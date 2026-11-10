@@ -501,11 +501,27 @@ Runtime. It now has an ONNX Runtime backend, selected automatically with
 scores as PyTorch, and runs 20 % faster on the development CPU (41.6 against
 53.0 ms). `--ego-scale` runs camera-motion estimation on a reduced frame.
 
-**The estimate above is still an estimate.** `docs/raspberry_pi_setup.md`
-sets the board up and runs `scripts/benchmark_pi.py`, which times every stage
-and the whole payload on the Pi, records temperature and throttling, and says
-which requirements the measured rate meets. That measurement replaces this
-section.
+### Measured on the board - two cores, laptop USB power
+
+`benchmark_pi.py` on the Raspberry Pi 4 Model B (Rev 1.5, 8 GB), restricted to
+cores 0 and 1 because the board was powered from a laptop USB port and browned
+out under four-core load (training_log section 57). Medians over 115-120
+frames of the 640 x 512 benchmark clip:
+
+| Stage | 2 cores |
+|-------|--------:|
+| Detector, ONNX Runtime | 412 ms |
+| Detector, PyTorch | 872 ms |
+| Camera motion, full / half scale | 30 / 13 ms |
+| **Whole payload** | **439 ms - 1.99 FPS** |
+| **Whole payload, camera motion at half scale** | **418 ms - 2.29 FPS** |
+
+**Confirmation (three frames) clears at every altitude, 60 m included.**
+Coverage clears everywhere; the 15-frame movement window does not. That is
+the estimate's verdict, on two of the four cores. Under-voltage and
+throttling still occurred during the run, which is where the slow tail comes
+from (payload p95 1,083 ms against a 439 ms median). The four-core figure
+needs a 5.1 V, 3 A supply and is still to be measured.
 
 ---
 

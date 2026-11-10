@@ -4193,3 +4193,58 @@ everything. `docs/raspberry_pi_setup.md` is the procedure.
 **No accelerator path.** The Hailo AI HAT+ held in reserve needs a Pi 5's
 PCIe connector, and a Coral USB accelerator needs a fully integer model -
 which cost 406 people in section 35. The remaining levers are software.
+
+---
+
+## 57. First Measurement on the Raspberry Pi 4
+
+The board is a Raspberry Pi 4 Model B Rev 1.5 with 8 GB, running Raspberry
+Pi OS 64-bit (Debian 13, Python 3.13), reached over a direct Ethernet cable.
+It was powered from a laptop USB port, which is not enough: it browned out
+and rebooted twice during the software install, leaving three packages with
+damaged files that had to be found by checking every installed file against
+pip's records and reinstalled. Measurements were therefore taken on two
+cores (`taskset -c 0,1`, two inference threads).
+
+### Two things that would have been wrong
+
+**PyPI's PyTorch for aarch64 is the CUDA build.** A plain `pip install
+ultralytics` began downloading gigabytes of NVIDIA libraries for a board
+with no NVIDIA GPU. PyTorch is installed from its CPU index instead
+(`docs/raspberry_pi_setup.md`).
+
+**The payload was running the deployed model at the wrong size, on the
+wrong engine.** Given weights by path - as on the board - it assumed a
+640 x 480 webcam input. The thermal model, trained at 640 x 512, was
+letterboxed into the wrong shape, and its ONNX export was rejected for not
+matching, so the payload fell back to PyTorch without saying so: the first
+two-core run measured 1.16 FPS with the detector taking 822 ms, which is
+PyTorch's time, not ONNX Runtime's 406 ms. `trained_shape()` now reads the
+input size from the ONNX export or the checkpoint's training arguments; a
+test pins it.
+
+### Measured (two cores)
+
+| Stage | Median | p95 |
+|-------|-------:|----:|
+| Detector, ONNX Runtime | 412 ms | 422 ms |
+| Detector, PyTorch | 872 ms | 1,870 ms |
+| Camera motion, full scale | 30 ms | 73 ms |
+| Camera motion, half scale | 13 ms | 14 ms |
+| **Whole payload** | **439 ms (1.99 FPS)** | 1,083 ms |
+| **Whole payload, half-scale camera motion** | **418 ms (2.29 FPS)** | 426 ms |
+
+ONNX Runtime is 2.1x faster than PyTorch for the detector on this board -
+more than the 1.3x on the development CPU. The detector is 94 % of the
+frame; camera motion is 7 % at full scale.
+
+Against the mission, two cores already clear three-frame confirmation at
+every altitude, 60 m included (1.34 FPS needed), and coverage everywhere.
+The 15-frame movement window (3.1-6.7 FPS) does not clear. The section 56
+estimate for four cores was 1.0-2.4 FPS; two cores measured 2.0-2.3, so the
+estimate was pessimistic.
+
+The firmware reported under-voltage and throttling during this run too
+(0x50000), and the slow tail - payload p95 1,083 ms against a 439 ms median,
+PyTorch p95 1,870 ms - is that. Temperature rose from 44 to 62 C without a
+fan. The four-core figure, and any flight, need a 5.1 V, 3 A supply.
